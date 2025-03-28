@@ -46,11 +46,12 @@ FINAL_IP=""
 getUnblockIP() {
   # 获取当前主机的主机名
   local hostname=$(hostname)
+  
   # 从主机名中提取出主机编号（即主机名的数字部分）
   local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
-  
+
   # 构建一个主机名数组，包含 cache、web 和当前主机
-  local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")  
+  local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
 
   # 使用工作目录变量来定义存储未被墙IP的文件路径
   local ip_file="$WORKDIR/unblock_ips.txt"
@@ -70,7 +71,7 @@ getUnblockIP() {
   # 遍历主机名称数组
   for host in "${hosts[@]}"; do
     # 使用curl命令调用API，获取主机的IP和状态信息
-    local response=$(curl -s --fail "https://ss.fkj.pp.ua/api/getip?host=$host")        
+    local response=$(curl -s --fail "https://ss.fkj.pp.ua/api/getip?host=$host")
 
     # 如果curl失败，返回错误并退出函数
     if [ $? -ne 0 ]; then
@@ -110,10 +111,7 @@ getUnblockIP() {
 
   # 如果成功获取到 IP，则退出函数并继续执行其他流程
   return 0
-}
-
-
-  
+}  
 # 定义函数来检查密码是否存在
 get_password() {
     # 如果密码文件存在，读取密码
