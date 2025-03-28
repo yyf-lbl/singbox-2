@@ -1734,22 +1734,23 @@ getUnblockIP2() {
 
     # 遍历主机名称数组
     for host in "${hosts[@]}"; do
-        # 使用curl命令调用API，获取主机的IP和状态信息
-        local response=$(curl -s "https://ss.fkj.pp.ua/api/getip?host=$host")      
+        # 使用 curl 命令调用 API，获取主机的 IP 和状态信息
+        local response
+        response=$(curl -s "https://ss.fkj.pp.ua/api/getip?host=$host") || continue
 
-        # 检查API返回的响应中是否包含 "not found" 字符串，表示无法识别该主机
+        # 检查 API 返回的响应中是否包含 "not found" 字符串，表示无法识别该主机
         if [[ "$response" =~ "not found" ]]; then
-            echo "未识别主机${host}!"
+            echo "未识别主机 ${host}!"
             return  # 退出函数
         fi
         
-        # 从API返回的数据中提取出IP地址和状态信息
-        local ip=$(echo "$response" | awk -F "|" '{print $1 }')
-        local status=$(echo "$response" | awk -F "|" '{print $2 }')
+        # 从 API 返回的数据中提取出 IP 地址和状态信息
+        local ip status
+        ip=$(echo "$response" | awk -F "|" '{print $1 }')
+        status=$(echo "$response" | awk -F "|" '{print $2 }')
 
-        # 将 "Accessible" 状态替换为 "未被墙"，"Blocked" 状态替换为 "已被墙"
+        # 仅当状态是 "Accessible" 时，才添加到 unblock_ips 数组
         if [[ "$status" == "Accessible" ]]; then
-            # 如果主机未被墙，将IP添加到 unblock_ips 数组中
             unblock_ips+=("$ip")
         fi
     done 
@@ -1763,6 +1764,7 @@ getUnblockIP2() {
     # 返回未被墙的 IP 地址列表
     echo "${unblock_ips[@]}"
 }
+
 
 get_ip() {
     # 提示用户选择方式: 输入 y 启用备用 IP，回车自动检测主机地址，或手动输入 IP
