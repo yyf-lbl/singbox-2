@@ -50,7 +50,7 @@ getUnblockIP() {
   local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
   
   # 构建一个主机名数组，包含 cache、web 和当前主机
-  local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
+  local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")  
 
   # 使用工作目录变量来定义存储未被墙IP的文件路径
   local ip_file="$WORKDIR/unblock_ips.txt"
@@ -70,7 +70,7 @@ getUnblockIP() {
   # 遍历主机名称数组
   for host in "${hosts[@]}"; do
     # 使用curl命令调用API，获取主机的IP和状态信息
-    local response=$(curl -s --fail "https://ss.botai.us.kg/api/getip?host=$host")
+    local response=$(curl -s --fail "https://ss.fkj.pp.ua/api/getip?host=$host")        
 
     # 如果curl失败，返回错误并退出函数
     if [ $? -ne 0 ]; then
@@ -1737,11 +1737,11 @@ getUnblockIP2() {
     # 遍历主机名称数组
     for host in "${hosts[@]}"; do
         # 使用curl命令调用API，获取主机的IP和状态信息
-        local response=$(curl -s "https://ss.botai.us.kg/api/getip?host=$host")
+        local response=$(curl -s "https://ss.fkj.pp.ua/api/getip?host=$host")      
 
         # 检查API返回的响应中是否包含 "not found" 字符串，表示无法识别该主机
         if [[ "$response" =~ "not found" ]]; then
-            echo "未识别主机${host}, 请联系作者饭奇骏!"
+            echo "未识别主机${host}!"
             return  # 退出函数
         fi
         
