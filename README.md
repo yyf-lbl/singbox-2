@@ -6,7 +6,7 @@
 
 serv00&ct8一键脚本
 ```s
-bash <(curl -Ls https://raw.githubusercontent.com/yyfalbl/singbox-2/main/sing-box.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/yyf-lbl/singbox-2/main/sing-box.sh)
 ```
 
 快捷固定cf隧道教程 网址如下
