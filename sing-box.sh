@@ -1732,112 +1732,98 @@ getUnblockIP2() {
     # 获取当前主机的主机名
     local hostname=$(hostname)
 
-    # 从主机名中提取出主机编号（即主机名的数字部分）
+    # 从主机名中提取出主机编号
     local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
 
-    # 构建一个主机名数组，包含 cache、web 和当前主机
+    # 构建一个主机名数组
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
 
-    # 定义一个数组，用于存储所有未被墙的IP
     local unblock_ips=()
-    
-    # 【新增】定义一个简单的IP地址正则表达式
     local ip_regex="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
 
-    echo "🧭 正在检测主机: ${hosts[*]}" >&2
+    # 【修改】将所有诊断信息重定向到/dev/null，以隐藏它们
+    echo "🧭 正在检测主机: ${hosts[*]}" >/dev/null 2>&1
 
-    # 遍历主机名称数组
     for host in "${hosts[@]}"; do
         local response
         response=$(curl -s "https://ss.fkj.pp.ua/api/getip?host=$host") || continue
 
         if [[ -z "$response" ]]; then
-            echo "⚠️  主机 ${host} 无响应" >&2
+            echo "⚠️  主机 ${host} 无响应" >/dev/null 2>&1
             continue
         fi
 
         if [[ "$response" =~ "not found" ]]; then
-            echo "❌ 未识别主机 ${host}" >&2
+            echo "❌ 未识别主机 ${host}" >/dev/null 2>&1
             continue
         fi
 
         local ip=$(echo "$response" | awk -F "|" '{print $1}')
         local status=$(echo "$response" | awk -F "|" '{print $2}')
 
-        echo "🔎 检测 ${host} → ${ip} (${status})" >&2
+        echo "🔎 检测 ${host} → ${ip} (${status})" >/dev/null 2>&1
 
-        # 【修改】只有当状态为 Accessible 且格式是IP地址时才添加
         if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
             unblock_ips+=("$ip")
         else
-            echo "⚠️  跳过无效条目: ${ip}" >&2
+            echo "⚠️  跳过无效条目: ${ip}" >/dev/null 2>&1
         fi
     done 
 
     if [[ ${#unblock_ips[@]} -eq 0 ]]; then
-        echo "🚫 未找到有效的未被墙 IP 地址" >&2
+        echo "🚫 未找到有效的未被墙 IP 地址" >/dev/null 2>&1
         return
     fi
 
-    echo "✅ 可用 IP: ${unblock_ips[@]}" >&2
+    echo "✅ 可用 IP: ${unblock_ips[@]}" >/dev/null 2>&1
     
-    # 只输出纯净的IP列表
+    # 这一行不变，它负责将纯净的IP列表返回给调用它的函数
     echo "${unblock_ips[@]}"
 }
 
-# <---- 用下面的代码替换掉你脚本中旧的 get_ip 函数 ---->
-
 get_ip() {
-    echo -e "${bold_italic_yellow}正在自动检测所有可用的IP地址...${reset}"
+    # 之前已经定义过这个颜色变量，这里确保它可用
+    local GREEN_BOLD_ITALIC="\033[1;3;32m"
     
-    # 优先通过API获取未被墙的IP列表
+    echo -e "${bold_italic_yellow}正在自动检测所有可用的IP地址... (这可能需要几秒钟)${reset}"
+    
+    # 调用函数，但其过程输出已被隐藏
     local unblock_ips=($(getUnblockIP2))
     local IP=""
     
-    # 检查是否从API获取到了有效的IP
     if [[ ${#unblock_ips[@]} -gt 0 ]]; then
-        echo -e "${bold_italic_green}检测到以下可用IP地址：${reset}"
+        # 【修改】使用绿色斜体加粗的颜色代码
+        echo -e "${GREEN_BOLD_ITALIC}检测到以下可用IP地址：${reset}"
         
-        # 打印带编号的IP列表
         local i=1
         for ip in "${unblock_ips[@]}"; do
-            echo -e "  ${bold_italic_yellow}[$i]${reset} $ip"
+            # 【修改】同样应用颜色代码
+            echo -e "  ${GREEN_BOLD_ITALIC}[$i] $ip${reset}"
             i=$((i + 1))
         done
         
-        echo "" # 空行以提高可读性
+        echo ""
         
-        # 提示用户选择
         read -p "$(echo -e "${bold_italic_yellow}请选择一个IP (输入编号, 或直接按Enter随机选择, 或手动输入其他IP): ${reset}")" choice
         
-        # --- 根据用户的选择进行决策 ---
-        
-        # 1. 用户直接按回车 (随机选择)
         if [[ -z "$choice" ]]; then
             IP=${unblock_ips[$((RANDOM % ${#unblock_ips[@]}))]}
             echo -e "${bold_italic_green}已为您随机选择IP: $IP${reset}"
         
-        # 2. 用户输入的是列表中的编号
-        # 检查输入是否为纯数字且在有效范围内
         elif [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#unblock_ips[@]} ]]; then
-            # Bash数组索引从0开始，所以需要减1
             IP=${unblock_ips[$((choice - 1))]}
             echo -e "${bold_italic_green}您已选择IP: $IP${reset}"
             
-        # 3. 用户手动输入了其他内容
         else
             IP="$choice"
             echo -e "${bold_italic_green}您已手动输入IP/域名: $IP${reset}"
         fi
 
     else
-        # 如果API未能找到任何IP，则执行后备方案
         echo -e "${bold_italic_yellow}API未能找到未被墙的IP，将尝试其他备用方案...${reset}"
         
-        # 尝试 netstat
         IP=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
         
-        # 如果 netstat 失败，则获取主IP
         if [[ -z "$IP" ]]; then
             echo "  -> 未找到netstat备用IP，正在获取服务器主IP..." >&2
             IP=$(curl -s https://api.ipify.org || { ipv6=$(curl -s --max-time 1 ipv6.ip.sb); echo "[$ipv6]"; })
@@ -1851,10 +1837,9 @@ get_ip() {
         fi
     fi
 
-    # 将最终确定的IP赋值给全局变量
     FINAL_IP="$IP"
     echo -e "${bold_italic_yellow}最终使用的IP地址是: ${FINAL_IP}${reset}"
-    sleep 1 # 稍作停顿，让用户看到最终结果
+    sleep 1
 }
 
 #获取临时或固定隧道域名
