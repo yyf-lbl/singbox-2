@@ -1283,7 +1283,7 @@ echo ""
         echo -e "\e[33;1;3m隧道域名: ${ARGO_DOMAIN}\e[0m"
     fi
 
-    echo -e "$(bold_italic_purple "安装完成！现在您可以通过菜单选项9来设置IP自动监控。")"
+    echo -e "$(bold_italic_purple "安装已完成！")"
 }
 
     
