@@ -2203,15 +2203,13 @@ change_ip() {
         return
     fi
 
-    # 获取当前正在使用的IP，以便后续替换
     local old_ip=$(cat "$base_dir/current_active_ip.txt")
     echo -e "${bold_italic_yellow}当前正在使用的IP是: ${old_ip}${reset}"
     
-    # --- 复用get_ip中的交互逻辑来选择新IP ---
     echo -e "${bold_italic_yellow}正在自动检测所有可用的IP地址...${reset}"
     
     local unblock_ips=($(getUnblockIP2))
-    local new_ip="" # 初始化新IP变量
+    local new_ip=""
     
     if [[ ${#unblock_ips[@]} -gt 0 ]]; then
         local GREEN_BOLD_ITALIC="\033[1;3;32m"
@@ -2240,19 +2238,21 @@ change_ip() {
         red "未能检测到任何可用的IP地址，无法更换。请稍后重试。"
         return
     fi
-    # --- IP选择逻辑结束 ---
 
-    # 检查新旧IP是否相同
     if [[ "$new_ip" == "$old_ip" ]]; then
         green "您选择的IP与当前IP相同，无需更改。"
         return
     fi
 
     echo "--> 正在更新核心配置文件 (config.json)..."
+    # 这里使用 # 作为分隔符也更安全
+    sed -i "s#__IP_ADDRESS__#${new_ip}#g" "$WORKDIR/config.template.json"
+    # 从模板重新生成config.json
     sed "s/__IP_ADDRESS__/${new_ip}/g" "$WORKDIR/config.template.json" > "$WORKDIR/config.json"
     
     echo "--> 正在更新节点链接文件 (list.txt)..."
-    sed -i "s/${old_ip}/${new_ip}/g" "$WORKDIR/list.txt"
+    # 【关键修复】将分隔符从 / 改为 #
+    sed -i "s#${old_ip}#${new_ip}#g" "$WORKDIR/list.txt"
 
     echo "--> 正在更新当前IP状态记录..."
     echo "$new_ip" > "$base_dir/current_active_ip.txt"
@@ -2262,7 +2262,6 @@ change_ip() {
     sleep 2
     nohup "$WORKDIR/web" run -c "$WORKDIR/config.json" >/dev/null 2>&1 &
     
-    # 验证重启结果
     if pgrep -f "$WORKDIR/web" > /dev/null; then
          green "服务重启成功！IP已成功更换为: ${new_ip}"
          echo "您现在可以通过 '3. 查看节点信息' 获取更新后的链接。"
@@ -2270,7 +2269,6 @@ change_ip() {
          red "错误：服务重启失败！请检查问题，或尝试手动重启。"
     fi
 }
-
 
 # 主菜单
 menu() {
