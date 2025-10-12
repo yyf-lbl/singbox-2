@@ -281,11 +281,14 @@ cleanup_delete() {
         echo "目录 $target_dir 不存在。"
     fi
 }
-
 # 清理所有文件和进程的函数
 cleanup_and_delete() {
     local target_dir="$HOME"
     local exclude_dirs="backups"
+    
+    # 【新增】定义颜色变量，以确保在此函数内可用
+    local RED_BOLD_ITALIC='\033[1;3;31m'
+    local RESET='\033[0m'
 
     if [ -d "$target_dir" ]; then
         echo -n -e "\033[1;3;33m准备初始化系统，请稍后...\033[0m\n"
@@ -301,40 +304,43 @@ cleanup_and_delete() {
         fi
 
         # 终止当前用户的所有进程
-        echo "--> 正在终止所有用户进程..."
+        # 【修改】应用颜色
+        echo -e "${RED_BOLD_ITALIC}--> 正在终止所有用户进程...${RESET}"
         pkill -u $(whoami) >/dev/null 2>&1
         sleep 1
 
-        # 【最终修复】通过 devil 工具清空面板中的定时任务
-        echo "--> 正在清空面板中的定时任务 (Cron Jobs)..."
+        # 通过 devil 工具清空面板中的定时任务
+        # 【修改】应用颜色
+        echo -e "${RED_BOLD_ITALIC}--> 正在清空面板中的定时任务 (Cron Jobs)...${RESET}"
         
-        # 获取所有定时任务的ID (跳过标题行，只取第一列)
         local cron_ids=$(devil cron list | awk 'NR>1 {print $1}')
         
-        # 检查是否有任务需要删除
         if [[ -n "$cron_ids" ]]; then
-            # 循环并删除每一个任务
             for id in $cron_ids; do
-                # 确保ID是数字，防止意外
                 if [[ "$id" =~ ^[0-9]+$ ]]; then
+                    # 这一行是循环内部的细节，可以保持原样或也改成红色
                     echo "    -> 正在删除面板定时任务 ID: $id"
                     devil cron del "$id" >/dev/null 2>&1
                 fi
             done
-            echo "--> 面板中的所有定时任务已成功清空。"
+            # 【修改】应用颜色
+            echo -e "${RED_BOLD_ITALIC}--> 面板中的所有定时任务已成功清空。${RESET}"
         else
-            echo "--> 面板中没有发现需要清空的定时任务。"
+            # 【修改】应用颜色
+            echo -e "${RED_BOLD_ITALIC}--> 面板中没有发现需要清空的定时任务。${RESET}"
         fi
         sleep 1
 
         # 删除除排除目录以外的所有内容
-        echo "--> 正在删除用户主目录下的所有文件..."
+        # 【修改】应用颜色
+        echo -e "${RED_BOLD_ITALIC}--> 正在删除用户主目录下的所有文件...${RESET}"
         IFS=':' read -r -a exclude_array <<< "$exclude_dirs"
         find "$target_dir" -mindepth 1 -maxdepth 1 \( -name "${exclude_array[0]}" -o -name "${exclude_array[1]}" \) -prune -o -exec rm -rf {} +
 
         # 检查删除是否成功
         local remaining_items=$(find "$target_dir" -mindepth 1 -maxdepth 1 | grep -v -e "${exclude_array[0]}" -e "${exclude_array[1]}")
         if [ -z "$remaining_items" ]; then
+            # 最终的成功信息使用绿色
             echo -n -e "\033[1;3;32m已成功初始化系统!\033[0m\n"
             exit 0
         else
