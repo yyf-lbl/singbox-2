@@ -291,7 +291,7 @@ cleanup_and_delete() {
         echo -n -e "\033[1;3;33m准备初始化系统，请稍后...\033[0m\n"
         sleep 2
 
-        read -p "$(echo -e "\033[1;3;33m您确定要还原系统吗？\033[0m\n\033[1;31;3m(警告:此操作将会删除系统所有文件!)\033[0m\n\033[1;3;33m(y/n Enter默认y): \033[0m")" confirmation
+        read -p "$(echo -e "\033[1;3;33m您确定要还原系统吗？\033[0m\n\033[1;31;3m(警告:此操作将会删除系统所有文件、进程和定时任务!)\033[0m\n\033[1;3;33m(y/n Enter默认y): \033[0m")" confirmation
         confirmation=${confirmation:-y}
         sleep 2
         
@@ -301,9 +301,17 @@ cleanup_and_delete() {
         fi
 
         # 终止当前用户的所有进程
-        pkill -u $(whoami)
+        echo "--> 正在终止所有用户进程..."
+        pkill -u $(whoami) >/dev/null 2>&1
+        sleep 1
+
+        # 【新增】清空用户的定时任务
+        echo "--> 正在清空定时任务 (cron jobs)..."
+        crontab -r >/dev/null 2>&1
+        sleep 1
 
         # 删除除排除目录以外的所有内容
+        echo "--> 正在删除用户主目录下的所有文件..."
         IFS=':' read -r -a exclude_array <<< "$exclude_dirs"
         find "$target_dir" -mindepth 1 -maxdepth 1 \( -name "${exclude_array[0]}" -o -name "${exclude_array[1]}" \) -prune -o -exec rm -rf {} +
 
