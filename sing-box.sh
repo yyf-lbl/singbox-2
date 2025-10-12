@@ -1785,88 +1785,76 @@ getUnblockIP2() {
     echo "${unblock_ips[@]}"
 }
 
+# <---- 用下面的代码替换掉你脚本中旧的 get_ip 函数 ---->
+
 get_ip() {
-    # 提示用户选择方式: 输入 y 启用备用 IP，回车自动检测主机地址，或手动输入 IP
-    read -p "$(echo -e "${CYAN}\033[1;3;33m是否自检有效备用IP地址（输入y确认，直接回车自动检测主机地址，或手动输入IP地址）: ${RESET}") " choice
-
-    if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
-        # 获取当前主机的域名
-        local hostname=$(hostname)
+    echo -e "${bold_italic_yellow}正在自动检测所有可用的IP地址...${reset}"
+    
+    # 优先通过API获取未被墙的IP列表
+    local unblock_ips=($(getUnblockIP2))
+    local IP=""
+    
+    # 检查是否从API获取到了有效的IP
+    if [[ ${#unblock_ips[@]} -gt 0 ]]; then
+        echo -e "${bold_italic_green}检测到以下可用IP地址：${reset}"
         
-        # 根据主机域名判断使用不同的方法
-        if [[ "$hostname" =~ \.serv00\.com$ ]]; then
-            # 如果主机域名是 xxx.serv00.com，则采用两种方法
-            unblock_ips=($(getUnblockIP2))  # 获取未被墙的 IP 地址
-
-            # 【修改】使用更可靠的方式判断数组是否为空
-            if [[ ${#unblock_ips[@]} -eq 0 ]]; then
-                echo -e "${CYAN}未能从 API 获取到有效的备用 IP，尝试从 netstat 获取备用 IP...${RESET}"
-                IP=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
-            else
-                # 随机选择一个未被墙的 IP 地址作为备用 IP
-                IP=${unblock_ips[$((RANDOM % ${#unblock_ips[@]}))]}
-                echo -e "${GREEN}\033[1;32m选择的备用 IP 地址是: $IP${RESET}"
-            fi
-        elif [[ "$hostname" =~ \.ct8\.pl$ ]]; then
-            # 如果主机域名是 xxx.ct8.pl，仅采用 netstat 方法
-            IP=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
-
-            if [[ -z "$IP" ]]; then
-                # 如果 netstat 获取不到 IP，再从文件读取备用 IP
-                for file in "$base_dir/.serv00_ip" "$ip_file"; do
-                    if [[ -f "$file" ]]; then
-                        IP=$(cat "$file")
-                        if [[ -n "$IP" ]]; then
-                            echo -e "${GREEN}\033[1;32m从文件获取的备用 IP 地址是: $IP${RESET}"
-                            break
-                        fi
-                    fi
-                done
-            fi
-
-            # 如果 netstat 和文件都没有获取到 IP，给出提示
-            if [[ -z "$IP" ]]; then
-                echo -e "${RED}\033[1;31m未找到可用的备用 IP 地址，请稍后再试！${RESET}"
-                return 1
-            fi
+        # 打印带编号的IP列表
+        local i=1
+        for ip in "${unblock_ips[@]}"; do
+            echo -e "  ${bold_italic_yellow}[$i]${reset} $ip"
+            i=$((i + 1))
+        done
+        
+        echo "" # 空行以提高可读性
+        
+        # 提示用户选择
+        read -p "$(echo -e "${bold_italic_yellow}请选择一个IP (输入编号, 或直接按Enter随机选择, 或手动输入其他IP): ${reset}")" choice
+        
+        # --- 根据用户的选择进行决策 ---
+        
+        # 1. 用户直接按回车 (随机选择)
+        if [[ -z "$choice" ]]; then
+            IP=${unblock_ips[$((RANDOM % ${#unblock_ips[@]}))]}
+            echo -e "${bold_italic_green}已为您随机选择IP: $IP${reset}"
+        
+        # 2. 用户输入的是列表中的编号
+        # 检查输入是否为纯数字且在有效范围内
+        elif [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#unblock_ips[@]} ]]; then
+            # Bash数组索引从0开始，所以需要减1
+            IP=${unblock_ips[$((choice - 1))]}
+            echo -e "${bold_italic_green}您已选择IP: $IP${reset}"
+            
+        # 3. 用户手动输入了其他内容
         else
-            # 如果主机域名既不是 xxx.serv00.com 也不是 xxx.ct8.pl，默认只使用 netstat 获取 IP
-            IP=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
-
-            if [[ -z "$IP" ]]; then
-                # 如果 netstat 获取不到 IP，再从文件读取备用 IP
-                for file in "$base_dir/.serv00_ip" "$ip_file"; do
-                    if [[ -f "$file" ]]; then
-                        IP=$(cat "$file")
-                        if [[ -n "$IP" ]]; then
-                            echo -e "${GREEN}\033[1;32m从文件获取的备用 IP 地址是: $IP${RESET}"
-                            break
-                        fi
-                    fi
-                done
-            fi
-
-            # 如果 netstat 和文件都没有获取到 IP，给出提示
-            if [[ -z "$IP" ]]; then
-                echo -e "${RED}\033[1;31m未找到可用的备用 IP 地址，请稍后再试！${RESET}"
-                return 1
-            fi
+            IP="$choice"
+            echo -e "${bold_italic_green}您已手动输入IP/域名: $IP${reset}"
         fi
-    elif [[ -z "$choice" ]]; then
-        # 如果用户直接回车，自动检测 IP 地址
-        IP=$(curl -s https://api.ipify.org || { ipv6=$(curl -s --max-time 1 ipv6.ip.sb); echo "[$ipv6]"; })
-        echo -e "${CYAN}\033[1;3;32m自动检测的设备 IP 地址是: $IP${RESET}"
+
     else
-        # 如果用户输入其他内容，尝试手动输入 IP 地址
-        IP="$choice"
-        echo -e "${CYAN}\033[1;3;32m手动输入的 IP 地址是: $IP${RESET}"
+        # 如果API未能找到任何IP，则执行后备方案
+        echo -e "${bold_italic_yellow}API未能找到未被墙的IP，将尝试其他备用方案...${reset}"
+        
+        # 尝试 netstat
+        IP=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
+        
+        # 如果 netstat 失败，则获取主IP
+        if [[ -z "$IP" ]]; then
+            echo "  -> 未找到netstat备用IP，正在获取服务器主IP..." >&2
+            IP=$(curl -s https://api.ipify.org || { ipv6=$(curl -s --max-time 1 ipv6.ip.sb); echo "[$ipv6]"; })
+        fi
+        
+        if [[ -n "$IP" ]]; then
+            echo -e "${bold_italic_green}已自动选择备用IP: $IP${reset}"
+        else
+            echo -e "${bold_italic_red}致命错误：所有方法都无法获取IP地址！${reset}"
+            exit 1
+        fi
     fi
 
-    # 将最终的 IP 存储到全局变量 FINAL_IP
+    # 将最终确定的IP赋值给全局变量
     FINAL_IP="$IP"
-    
-    # 输出最终使用的 IP 地址
-    echo -e "${CYAN}\033[1;3;32m最终使用的IP地址是: $FINAL_IP${RESET}"
+    echo -e "${bold_italic_yellow}最终使用的IP地址是: ${FINAL_IP}${reset}"
+    sleep 1 # 稍作停顿，让用户看到最终结果
 }
 
 #获取临时或固定隧道域名
