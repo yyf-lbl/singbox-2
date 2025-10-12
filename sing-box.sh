@@ -2303,8 +2303,8 @@ done
             clear
             ;;
         7)
-            getUnblockIP2
-          
+            stop_web
+            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
             clear
             ;;
         8)
