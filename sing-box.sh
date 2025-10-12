@@ -2231,7 +2231,7 @@ change_ip() {
             echo -e "${bold_italic_green}已为您随机选择新IP: $new_ip${reset}"
         elif [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#unblock_ips[@]} ]]; then
             new_ip=${unblock_ips[$((choice - 1))]}
-            echo -e "${bold_italic_green}您已选择新IP: $new_ip${reset}"
+            echo -e "\033[1;3;32m您已选择新IP: $new_ip\033[0m"
         else
             red "无效输入，操作已取消。"
             return
