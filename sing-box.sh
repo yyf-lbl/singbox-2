@@ -2247,10 +2247,10 @@ change_ip() {
     fi
 
     # 【关键美化】对以下状态信息应用紫色斜体加粗格式
-    bold_italic_purple "--> 正在更新核心配置文件 (config.json)..."
+    bold_italic_purple "--> 正在更新核心配置文件..."
     sed "s/__IP_ADDRESS__/${new_ip}/g" "$WORKDIR/config.template.json" > "$WORKDIR/config.json"
     
-    bold_italic_purple "--> 正在更新节点链接文件 (list.txt)..."
+    bold_italic_purple "--> 正在更新节点链接..."
     sed -i '' "s#${old_ip}#${new_ip}#g" "$WORKDIR/list.txt"
 
     bold_italic_purple "--> 正在更新当前IP状态记录..."
