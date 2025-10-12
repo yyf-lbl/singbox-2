@@ -2194,8 +2194,6 @@ bold_italic_orange() {
     echo -e "\033[1;3;36m$1\033[0m"
 }    
 
-# <---- 用这个【最终修复版】替换旧的 change_ip 函数 ---->
-
 # 更换/更新可用IP的函数
 change_ip() {
     # 检查sing-box是否已安装，以及必要文件是否存在
@@ -2250,7 +2248,7 @@ change_ip() {
     sed "s/__IP_ADDRESS__/${new_ip}/g" "$WORKDIR/config.template.json" > "$WORKDIR/config.json"
     
     echo "--> 正在更新节点链接文件 (list.txt)..."
-    # 【最终修复】为-i选项提供一个空的参数 ''，以兼容BSD sed
+    # 使用 '' 为 -i 提供空参数，兼容BSD sed
     sed -i '' "s#${old_ip}#${new_ip}#g" "$WORKDIR/list.txt"
 
     echo "--> 正在更新当前IP状态记录..."
@@ -2261,14 +2259,23 @@ change_ip() {
     sleep 2
     nohup "$WORKDIR/web" run -c "$WORKDIR/config.json" >/dev/null 2>&1 &
     
+    # 验证重启结果
     if pgrep -f "$WORKDIR/web" > /dev/null; then
-         green "服务重启成功！IP已成功更换为: ${new_ip}"
-         echo "您现在可以通过 '3. 查看节点信息' 获取更新后的链接。"
+        # 【关键优化】成功后，直接显示更新后的节点信息
+        green "服务重启成功！IP已成功更换为: ${new_ip}"
+        echo "" # 增加一个空行
+        bold_italic_purple "以下是更新后的节点信息："
+        
+        if [ -f "$WORKDIR/list.txt" ]; then
+            # 因为list.txt本身就包含了颜色代码，所以直接cat即可
+            cat "$WORKDIR/list.txt"
+        else
+            red "错误：找不到节点信息文件 list.txt"
+        fi
     else
          red "错误：服务重启失败！请检查问题，或尝试手动重启。"
     fi
 }
-
 # 主菜单
 menu() {
      while true; do
