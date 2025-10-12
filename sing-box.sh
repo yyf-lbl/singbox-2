@@ -2246,30 +2246,27 @@ change_ip() {
         return
     fi
 
-    echo "--> 正在更新核心配置文件 (config.json)..."
+    # 【关键美化】对以下状态信息应用紫色斜体加粗格式
+    bold_italic_purple "--> 正在更新核心配置文件 (config.json)..."
     sed "s/__IP_ADDRESS__/${new_ip}/g" "$WORKDIR/config.template.json" > "$WORKDIR/config.json"
     
-    echo "--> 正在更新节点链接文件 (list.txt)..."
-    # 使用 '' 为 -i 提供空参数，兼容BSD sed
+    bold_italic_purple "--> 正在更新节点链接文件 (list.txt)..."
     sed -i '' "s#${old_ip}#${new_ip}#g" "$WORKDIR/list.txt"
 
-    echo "--> 正在更新当前IP状态记录..."
+    bold_italic_purple "--> 正在更新当前IP状态记录..."
     echo "$new_ip" > "$base_dir/current_active_ip.txt"
     
-    echo "--> 正在重启sing-box服务以应用新IP..."
+    bold_italic_purple "--> 正在重启sing-box服务以应用新IP..."
     pkill -f "$WORKDIR/web"
     sleep 2
     nohup "$WORKDIR/web" run -c "$WORKDIR/config.json" >/dev/null 2>&1 &
     
-    # 验证重启结果
     if pgrep -f "$WORKDIR/web" > /dev/null; then
-        # 【关键优化】成功后，直接显示更新后的节点信息
         green "服务重启成功！IP已成功更换为: ${new_ip}"
-        echo "" # 增加一个空行
+        echo ""
         bold_italic_purple "以下是更新后的节点信息："
         
         if [ -f "$WORKDIR/list.txt" ]; then
-            # 因为list.txt本身就包含了颜色代码，所以直接cat即可
             cat "$WORKDIR/list.txt"
         else
             red "错误：找不到节点信息文件 list.txt"
