@@ -1808,7 +1808,7 @@ get_ip() {
         
         if [[ -z "$choice" ]]; then
             IP=${unblock_ips[$((RANDOM % ${#unblock_ips[@]}))]}
-            echo -e "${bold_italic_green}已为您随机选择IP: $IP${reset}"
+          echo -e "\033[1;3;32m您已选择IP: $IP\033[0m"
         
         elif [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#unblock_ips[@]} ]]; then
             IP=${unblock_ips[$((choice - 1))]}
