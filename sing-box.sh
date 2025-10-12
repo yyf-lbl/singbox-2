@@ -11,15 +11,13 @@ RED='\033[1;31m'
 BOLD_ITALIC='\033[1;3m'
 RESET='\033[0m'
 GREEN_BOLD_ITALIC="\033[1;3;32m"
-RESET="\033[0m"
 # Formatting functions
 bold_italic_red() { echo -e "${bold_red}\033[3m$1${reset}"; }
 bold_italic_green() { echo -e "${bold_green}\033[3m$1${reset}"; }
 bold_italic_yellow() { echo -e "${bold_yellow}\033[3m$1${reset}"; }
 bold_italic_purple() { echo -e "${bold_purple}\033[3m$1${reset}"; }
-RED_BOLD_ITALIC='\033[1;3;31m'  
-GREEN_BOLD_ITALIC='\033[1;3;32m'  
-RESET='\033[0m' 
+RED_BOLD_ITALIC='\033[1;3;31m'
+GREEN_BOLD_ITALIC='\033[1;3;32m'
 red() {
     local RED='\033[0;31m'      # 红色
     local BOLD='\033[1m'        # 加粗
@@ -1242,6 +1240,7 @@ done
 echo ""
     download_singbox && wait
   echo ""  
+    get_ip # Make sure we have an IP before generating config
     generate_config
 
     if [ "$INSTALL_VLESS" = "true" ]; then
@@ -1261,8 +1260,6 @@ echo ""
     fi
 
     # 运行 sing-box
-   get_ip
-   generate_config
    run_sb && sleep 3
     get_links
     
@@ -1271,7 +1268,7 @@ echo ""
         echo -e "\e[33;1;3m隧道域名: ${ARGO_DOMAIN}\e[0m"
     fi
 
-    echo -e "$(bold_italic_purple "安装完成！")"
+    echo -e "$(bold_italic_purple "安装完成！现在您可以通过菜单选项9来设置IP自动监控。")"
 }
 
     
@@ -1283,6 +1280,10 @@ uninstall_singbox() {
 
     case "$choice" in
         [Yy])
+            # 停止定时任务
+            (crontab -l 2>/dev/null | grep -v "ip_monitor.sh") | crontab -
+            echo -e "$(bold_italic_purple "已移除IP监控定时任务。")"
+
             # 终止 sing-box 相关进程
             for process in 'web' 'bot' 'npm'; do
                 pids=$(pgrep -f "$process" 2>/dev/null)
@@ -1372,7 +1373,8 @@ RESET="\033[0m"
  # 使用当前用户的主目录定义默认路径
 CERT_PATH="${HOME}/sbox/cert.pem"
 PRIVATE_KEY_PATH="${HOME}/sbox/private.key"
-# 配置文件生成函数
+
+# [MODIFIED] 配置文件生成函数
 generate_config() {
     # 生成现实密钥对
     output=$(./web generate reality-keypair)
@@ -1389,8 +1391,8 @@ generate_config() {
         return 1
     fi
     
-    # 基于所选服务创建配置文件
-    cat > "$WORKDIR/config.json" <<EOF
+    # [CHANGE] 基于所选服务创建配置文件模板
+    cat > "$WORKDIR/config.template.json" <<EOF
 {
   "log": {
     "disabled": false,
@@ -1426,7 +1428,7 @@ EOF
 
     # 如果选择，则附加VLESS配置
     if [ "$INSTALL_VLESS" = "true" ]; then
-        cat >> "$WORKDIR/config.json" <<EOF
+        cat >> "$WORKDIR/config.template.json" <<EOF
     {
       "tag": "vless-reality-version",
       "type": "vless",
@@ -1458,8 +1460,8 @@ EOF
 
     # Append VMESS configuration if selected
     if [ "$INSTALL_VMESS" = "true" ]; then
-        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.json"
-        cat >> "$WORKDIR/config.json" <<EOF
+        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.template.json"
+        cat >> "$WORKDIR/config.template.json" <<EOF
     {
       "tag": "vmess-ws-in",
       "type": "vmess",
@@ -1482,12 +1484,12 @@ EOF
 
     # Append Hysteria2 configuration if selected
     if [ "$INSTALL_HYSTERIA2" = "true" ]; then
-        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.json"
-        cat >> "$WORKDIR/config.json" <<EOF
+        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.template.json"
+        cat >> "$WORKDIR/config.template.json" <<EOF
     {
       "tag": "hysteria-in",
       "type": "hysteria2",
-      "listen": "$FINAL_IP",
+      "listen": "__IP_ADDRESS__",
       "listen_port": $hy2_port,
       "users": [
         {
@@ -1508,12 +1510,12 @@ EOF
 
     # Append TUIC configuration if selected
     if [ "$INSTALL_TUIC" = "true" ]; then
-        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.json"
-        cat >> "$WORKDIR/config.json" <<EOF
+        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.template.json"
+        cat >> "$WORKDIR/config.template.json" <<EOF
     {
       "tag": "tuic-in",
       "type": "tuic",
-      "listen": "$FINAL_IP",
+      "listen": "__IP_ADDRESS__",
       "listen_port": $tuic_port,
       "users": [
         {
@@ -1533,7 +1535,7 @@ EOF
     fi
 
     # 继续写入配置的其余部分
-    cat >> "$WORKDIR/config.json" <<EOF
+    cat >> "$WORKDIR/config.template.json" <<EOF
   ],
   "outbounds": [
     {
@@ -1657,6 +1659,12 @@ EOF
   }
 }
 EOF
+    
+    # [NEW] 从模板生成初始的配置文件，并保存当前IP状态
+    sed "s/__IP_ADDRESS__/${FINAL_IP}/g" "$WORKDIR/config.template.json" > "$WORKDIR/config.json"
+    echo "$FINAL_IP" > "$base_dir/current_active_ip.txt"
+    green "配置文件模板和初始配置文件已生成。"
+    green "当前活动IP ${FINAL_IP} 已被记录。"
 }
 
 
@@ -1732,48 +1740,48 @@ getUnblockIP2() {
 
     # 定义一个数组，用于存储所有未被墙的IP
     local unblock_ips=()
+    
+    # 【新增】定义一个简单的IP地址正则表达式
+    local ip_regex="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
 
-    echo "🧭 正在检测主机: ${hosts[*]}"
+    echo "🧭 正在检测主机: ${hosts[*]}" >&2
 
     # 遍历主机名称数组
     for host in "${hosts[@]}"; do
-        # 使用 curl 命令调用 API，获取主机的 IP 和状态信息
         local response
         response=$(curl -s "https://ss.fkj.pp.ua/api/getip?host=$host") || continue
 
-        # 检查 API 返回的响应是否为空
         if [[ -z "$response" ]]; then
-            echo "⚠️  主机 ${host} 无响应"
+            echo "⚠️  主机 ${host} 无响应" >&2
             continue
         fi
 
-        # 检查 API 返回的响应中是否包含 "not found" 字符串
         if [[ "$response" =~ "not found" ]]; then
-            echo "❌ 未识别主机 ${host}"
+            echo "❌ 未识别主机 ${host}" >&2
             continue
         fi
 
-        # 从 API 返回的数据中提取出 IP 地址和状态信息
-        local ip status
-        ip=$(echo "$response" | awk -F "|" '{print $1}')
-        status=$(echo "$response" | awk -F "|" '{print $2}')
+        local ip=$(echo "$response" | awk -F "|" '{print $1}')
+        local status=$(echo "$response" | awk -F "|" '{print $2}')
 
-        echo "🔎 检测 ${host} → ${ip} (${status})"
+        echo "🔎 检测 ${host} → ${ip} (${status})" >&2
 
-        # 仅当状态是 "Accessible" 时，才添加到 unblock_ips 数组
-        if [[ "$status" == "Accessible" ]]; then
+        # 【修改】只有当状态为 Accessible 且格式是IP地址时才添加
+        if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
             unblock_ips+=("$ip")
+        else
+            echo "⚠️  跳过无效条目: ${ip}" >&2
         fi
     done 
 
-    # 如果没有找到任何未被墙的 IP 地址
     if [[ ${#unblock_ips[@]} -eq 0 ]]; then
-        echo "🚫 未找到有效的未被墙 IP 地址"
+        echo "🚫 未找到有效的未被墙 IP 地址" >&2
         return
     fi
 
-    # 返回未被墙的 IP 地址列表
-    echo "✅ 可用 IP: ${unblock_ips[@]}"
+    echo "✅ 可用 IP: ${unblock_ips[@]}" >&2
+    
+    # 只输出纯净的IP列表
     echo "${unblock_ips[@]}"
 }
 
@@ -1790,9 +1798,9 @@ get_ip() {
             # 如果主机域名是 xxx.serv00.com，则采用两种方法
             unblock_ips=($(getUnblockIP2))  # 获取未被墙的 IP 地址
 
-            # 如果 getUnblockIP2 获取失败，则 IP 会为空，跳过后续步骤
-            if [[ -z "$unblock_ips" ]]; then
-                echo -e "${CYAN}未能从 getUnblockIP2 获取到有效的备用 IP，尝试从 netstat 获取备用 IP...${RESET}"
+            # 【修改】使用更可靠的方式判断数组是否为空
+            if [[ ${#unblock_ips[@]} -eq 0 ]]; then
+                echo -e "${CYAN}未能从 API 获取到有效的备用 IP，尝试从 netstat 获取备用 IP...${RESET}"
                 IP=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
             else
                 # 随机选择一个未被墙的 IP 地址作为备用 IP
@@ -1860,7 +1868,6 @@ get_ip() {
     # 输出最终使用的 IP 地址
     echo -e "${CYAN}\033[1;3;32m最终使用的IP地址是: $FINAL_IP${RESET}"
 }
-
 
 #获取临时或固定隧道域名
 get_argodomain() {
@@ -2213,6 +2220,165 @@ bold_italic_orange() {
     bold_italic_light_blue() {
     echo -e "\033[1;3;36m$1\033[0m"
 }    
+
+# [NEW] 设置IP自动监控的函数
+setup_ip_monitor() {
+    local monitor_script_path="$WORKDIR/ip_monitor.sh"
+
+    # 创建监控脚本文件
+    cat > "$monitor_script_path" << 'EOF'
+#!/bin/bash
+
+# ===============================================
+# sing-box IP 自动监控与切换脚本
+# ===============================================
+
+# --- 配置路径 ---
+WORKDIR="$HOME/sbox"
+BEI_DIR="$HOME/.beifile"
+CONFIG_TEMPLATE="$WORKDIR/config.template.json"
+CONFIG_FILE="$WORKDIR/config.json"
+STATE_FILE="$BEI_DIR/current_active_ip.txt"
+LINK_FILE="$WORKDIR/list.txt"
+LOG_FILE="$WORKDIR/monitor.log"
+
+# --- 日志记录函数 ---
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+}
+
+# --- 获取可用IP的函数 ---
+getUnblockIPs() {
+    local hostname=$(hostname)
+    # 假设是serv00.com, 从主机名s123.serv00.com中提取123
+    local host_number=$(echo "$hostname" | grep -o -E '[0-9]+')
+    if [[ -z "$host_number" ]]; then
+        # 如果主机名不符合sXXX格式，使用一个默认值或退出
+        log "无法从主机名 $hostname 提取主机编号。"
+        return
+    fi
+    local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
+    local unblock_ips=()
+
+    for host in "${hosts[@]}"; do
+        # 增加超时和重试以提高稳定性
+        local response=$(curl -s --connect-timeout 5 --max-time 10 "https://ss.fkj.pp.ua/api/getip?host=$host")
+        if [[ $? -ne 0 ]]; then
+            log "API请求失败: $host"
+            continue
+        fi
+        
+        if [[ "$response" =~ "Accessible" ]]; then
+            local ip=$(echo "$response" | awk -F "|" '{print $1}')
+            unblock_ips+=("$ip")
+        fi
+    done
+    # 返回去重后的IP列表，每行一个
+    printf "%s\n" "${unblock_ips[@]}" | sort -u
+}
+
+
+# --- 主逻辑开始 ---
+
+# 1. 检查必要文件是否存在
+if [ ! -f "$STATE_FILE" ] || [ ! -f "$CONFIG_TEMPLATE" ]; then
+    log "错误：状态文件或配置模板不存在，退出监控。"
+    exit 1
+fi
+
+# 2. 获取当前正在使用的IP
+current_ip=$(cat "$STATE_FILE")
+if [ -z "$current_ip" ]; then
+    log "错误：当前IP为空，退出监控。"
+    exit 1
+fi
+log "当前活动IP: $current_ip"
+
+# 3. 获取所有当前可用的IP列表
+log "开始检测可用IP..."
+mapfile -t accessible_ips < <(getUnblockIPs)
+
+if [ ${#accessible_ips[@]} -eq 0 ]; then
+    log "警告：未能检测到任何可用的IP地址，本次不执行任何操作。"
+    exit 0
+fi
+
+log "检测到可用IP列表: ${accessible_ips[*]}"
+
+# 4. 判断当前IP是否仍在可用列表中
+is_current_ip_still_ok=false
+for ip in "${accessible_ips[@]}"; do
+    if [[ "$ip" == "$current_ip" ]]; then
+        is_current_ip_still_ok=true
+        break
+    fi
+done
+
+# 5. 决策与执行
+if $is_current_ip_still_ok; then
+    log "状态正常：当前IP $current_ip 仍然可用。无需切换。"
+    exit 0
+else
+    log "状态异常：当前IP $current_ip 已失效！"
+    
+    # 从可用列表中选择一个新的IP (这里简单选择第一个作为最优IP)
+    new_ip=${accessible_ips[0]}
+    
+    if [ -z "$new_ip" ] || [[ "$new_ip" == "$current_ip" ]]; then
+        log "错误：无法获取新的可用IP，或者新IP与旧IP相同，切换失败。"
+        exit 1
+    fi
+
+    log "准备切换到新的IP: $new_ip"
+
+    # 执行切换操作
+    # a. 从模板生成新的配置文件
+    sed "s/__IP_ADDRESS__/${new_ip}/g" "$CONFIG_TEMPLATE" > "$CONFIG_FILE"
+    log "已根据模板更新配置文件 $CONFIG_FILE"
+
+    # b. 更新节点链接文件
+    sed -i "s/${current_ip}/${new_ip}/g" "$LINK_FILE"
+    log "已更新 $LINK_FILE 中的节点链接。"
+
+    # c. 重启 sing-box 服务
+    log "正在重启sing-box服务..."
+    pkill -f "$WORKDIR/web"
+    sleep 2
+    nohup "$WORKDIR/web" run -c "$CONFIG_FILE" >/dev/null 2>&1 &
+    
+    # 检查重启是否成功
+    if pgrep -f "$WORKDIR/web" > /dev/null; then
+        log "服务重启成功！"
+        # d. 更新状态文件
+        echo "$new_ip" > "$STATE_FILE"
+        log "切换完成！当前活动IP已更新为 $new_ip"
+    else
+        log "错误：服务重启失败！请检查问题。"
+    fi
+fi
+
+EOF
+
+    chmod +x "$monitor_script_path"
+    green "IP监控脚本已创建于: $monitor_script_path"
+
+    # 设置cron定时任务
+    # 检查任务是否已存在
+    if crontab -l 2>/dev/null | grep -q "ip_monitor.sh"; then
+        yellow "IP监控的定时任务已经存在，无需重复添加。"
+    else
+        # 添加新任务
+        (crontab -l 2>/dev/null; echo "*/15 * * * * /bin/bash $monitor_script_path") | crontab -
+        if [[ $? -eq 0 ]]; then
+            green "成功添加定时任务！脚本将每15分钟自动检测并切换IP。"
+            green "您可以通过 'cat $WORKDIR/monitor.log' 查看运行日志。"
+        else
+            red "添加定时任务失败，请尝试手动添加。"
+            red "手动添加命令: (crontab -l 2>/dev/null; echo \"*/15 * * * * /bin/bash $monitor_script_path\") | crontab -"
+        fi
+    fi
+}
+
 # 主菜单
 menu() {
      while true; do
@@ -2265,11 +2431,14 @@ done
    echo "==============="
    pink "\033[1;3m8. 系统初始化\033[0m"
    echo "==============="
+   # [NEW] 新增菜单项
+   bold_italic_orange "\033[1;3m9. 开启/更新 IP 自动监控\033[0m"
+   echo "==============="
    red "\033[1;3m0. 退出脚本\033[0m"
    echo "==========="
  # 清理输入缓冲区
    #     while read -t 0 -n 1; do : ; done
-   reading "请输入选择(0-8): " choice
+   reading "请输入选择(0-9): " choice
    echo ""
    case "${choice}" in
         1)
@@ -2311,10 +2480,16 @@ done
             cleanup_and_delete
             read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
             clear
-            ;;  
+            ;;
+        # [NEW] 新增case
+        9)
+            setup_ip_monitor
+            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
+            clear
+            ;;
         0) exit 0 ;;   
       *)
-            red "\033[1;3m无效的选项，请输入 0 到 8\033[0m"
+            red "\033[1;3m无效的选项，请输入 0 到 9\033[0m"
             echo ""
             ;;
     esac
