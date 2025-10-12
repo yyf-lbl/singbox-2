@@ -2304,7 +2304,7 @@ done
             ;;
         7)
             getUnblockIP2
-            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
+          
             clear
             ;;
         8)
