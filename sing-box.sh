@@ -281,20 +281,21 @@ cleanup_delete() {
         echo "目录 $target_dir 不存在。"
     fi
 }
+
 # 清理所有文件和进程的函数
 cleanup_and_delete() {
     local target_dir="$HOME"
     local exclude_dirs="backups"
     
-    # 【新增】定义颜色变量，以确保在此函数内可用
     local RED_BOLD_ITALIC='\033[1;3;31m'
+    local YELLOW_BOLD_ITALIC='\033[1;3;33m'
     local RESET='\033[0m'
 
     if [ -d "$target_dir" ]; then
         echo -n -e "\033[1;3;33m准备初始化系统，请稍后...\033[0m\n"
         sleep 2
 
-        read -p "$(echo -e "\033[1;3;33m您确定要还原系统吗？\033[0m\n\033[1;31;3m(警告:此操作将会删除系统所有文件、进程和面板中的定时任务!)\033[0m\n\033[1;3;33m(y/n Enter默认y): \033[0m")" confirmation
+        read -p "$(echo -e "\033[1;3;33m您确定要还原系统吗？\033[0m\n\033[1;31;3m(警告:此操作将会删除系统所有文件和进程!)\033[0m\n\033[1;3;33m(y/n Enter默认y): \033[0m")" confirmation
         confirmation=${confirmation:-y}
         sleep 2
         
@@ -304,44 +305,24 @@ cleanup_and_delete() {
         fi
 
         # 终止当前用户的所有进程
-        # 【修改】应用颜色
         echo -e "${RED_BOLD_ITALIC}--> 正在终止所有用户进程...${RESET}"
         pkill -u $(whoami) >/dev/null 2>&1
         sleep 1
 
-        # 通过 devil 工具清空面板中的定时任务
-        # 【修改】应用颜色
-        echo -e "${RED_BOLD_ITALIC}--> 正在清空面板中的定时任务 (Cron Jobs)...${RESET}"
-        
-        local cron_ids=$(devil cron list | awk 'NR>1 {print $1}')
-        
-        if [[ -n "$cron_ids" ]]; then
-            for id in $cron_ids; do
-                if [[ "$id" =~ ^[0-9]+$ ]]; then
-                    # 这一行是循环内部的细节，可以保持原样或也改成红色
-                    echo "    -> 正在删除面板定时任务 ID: $id"
-                    devil cron del "$id" >/dev/null 2>&1
-                fi
-            done
-            # 【修改】应用颜色
-            echo -e "${RED_BOLD_ITALIC}--> 面板中的所有定时任务已成功清空。${RESET}"
-        else
-            # 【修改】应用颜色
-            echo -e "${RED_BOLD_ITALIC}--> 面板中没有发现需要清空的定时任务。${RESET}"
-        fi
-        sleep 1
+        # 明确告知用户需要手动删除定时任务
+        echo -e "${YELLOW_BOLD_ITALIC}--> 重要提示: 您的服务器环境不支持通过脚本自动删除定时任务。${RESET}"
+        echo -e "${YELLOW_BOLD_ITALIC}--> 请在初始化完成后，务必手动登录网页控制面板，清空所有 Cron Jobs。${RESET}"
+        sleep 5 
 
         # 删除除排除目录以外的所有内容
-        # 【修改】应用颜色
         echo -e "${RED_BOLD_ITALIC}--> 正在删除用户主目录下的所有文件...${RESET}"
         IFS=':' read -r -a exclude_array <<< "$exclude_dirs"
         find "$target_dir" -mindepth 1 -maxdepth 1 \( -name "${exclude_array[0]}" -o -name "${exclude_array[1]}" \) -prune -o -exec rm -rf {} +
 
-        # 检查删除是否成功
         local remaining_items=$(find "$target_dir" -mindepth 1 -maxdepth 1 | grep -v -e "${exclude_array[0]}" -e "${exclude_array[1]}")
         if [ -z "$remaining_items" ]; then
-            # 最终的成功信息使用绿色
-            echo -n -e "\033[1;3;32m已成功初始化系统!\033[0m\n"
+            # 在最终的成功信息里再次提醒
+            echo -n -e "\033[1;3;32m已成功初始化系统! 请记得手动清理网页面板中的定时任务。\033[0m\n"
             exit 0
         else
             echo "删除操作出现问题，请检查是否有权限问题或其他错误。"
@@ -350,6 +331,7 @@ cleanup_and_delete() {
         echo "目录 $target_dir 不存在。"
     fi
 }
+
 # 获取主机域名和ip地址
 get_server_info() {
     # 颜色变量
@@ -1311,10 +1293,6 @@ uninstall_singbox() {
 
     case "$choice" in
         [Yy])
-            # 停止定时任务
-            (crontab -l 2>/dev/null | grep -v "ip_monitor.sh") | crontab -
-            echo -e "$(bold_italic_purple "已移除IP监控定时任务。")"
-
             # 终止 sing-box 相关进程
             for process in 'web' 'bot' 'npm'; do
                 pids=$(pgrep -f "$process" 2>/dev/null)
@@ -1405,7 +1383,7 @@ RESET="\033[0m"
 CERT_PATH="${HOME}/sbox/cert.pem"
 PRIVATE_KEY_PATH="${HOME}/sbox/private.key"
 
-# [MODIFIED] 配置文件生成函数
+# 配置文件生成函数
 generate_config() {
     # 生成现实密钥对
     output=$(./web generate reality-keypair)
@@ -1422,7 +1400,7 @@ generate_config() {
         return 1
     fi
     
-    # [CHANGE] 基于所选服务创建配置文件模板
+    # 基于所选服务创建配置文件模板
     cat > "$WORKDIR/config.template.json" <<EOF
 {
   "log": {
@@ -1691,7 +1669,7 @@ EOF
 }
 EOF
     
-    # [NEW] 从模板生成初始的配置文件，并保存当前IP状态
+    # 从模板生成初始的配置文件，并保存当前IP状态
     sed "s/__IP_ADDRESS__/${FINAL_IP}/g" "$WORKDIR/config.template.json" > "$WORKDIR/config.json"
     echo "$FINAL_IP" > "$base_dir/current_active_ip.txt"
     green "配置文件模板和初始配置文件已生成。"
@@ -1762,38 +1740,30 @@ run_sb() {
 getUnblockIP2() {
     # 获取当前主机的主机名
     local hostname=$(hostname)
-
     # 从主机名中提取出主机编号
     local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
-
     # 构建一个主机名数组
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
-
     local unblock_ips=()
     local ip_regex="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
 
-    # 【修改】将所有诊断信息重定向到/dev/null，以隐藏它们
+    # 将所有诊断信息重定向到/dev/null，以隐藏它们
     echo "🧭 正在检测主机: ${hosts[*]}" >/dev/null 2>&1
 
     for host in "${hosts[@]}"; do
         local response
         response=$(curl -s "https://ss.fkj.pp.ua/api/getip?host=$host") || continue
-
         if [[ -z "$response" ]]; then
             echo "⚠️  主机 ${host} 无响应" >/dev/null 2>&1
             continue
         fi
-
         if [[ "$response" =~ "not found" ]]; then
             echo "❌ 未识别主机 ${host}" >/dev/null 2>&1
             continue
         fi
-
         local ip=$(echo "$response" | awk -F "|" '{print $1}')
         local status=$(echo "$response" | awk -F "|" '{print $2}')
-
         echo "🔎 检测 ${host} → ${ip} (${status})" >/dev/null 2>&1
-
         if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
             unblock_ips+=("$ip")
         else
@@ -1805,30 +1775,29 @@ getUnblockIP2() {
         echo "🚫 未找到有效的未被墙 IP 地址" >/dev/null 2>&1
         return
     fi
-
     echo "✅ 可用 IP: ${unblock_ips[@]}" >/dev/null 2>&1
     
-    # 这一行不变，它负责将纯净的IP列表返回给调用它的函数
+    # 只输出纯净的IP列表
     echo "${unblock_ips[@]}"
 }
 
 get_ip() {
-    # 之前已经定义过这个颜色变量，这里确保它可用
+    # 确保颜色变量可用
     local GREEN_BOLD_ITALIC="\033[1;3;32m"
     
     echo -e "${bold_italic_yellow}正在自动检测所有可用的IP地址... (这可能需要几秒钟)${reset}"
     
-    # 调用函数，但其过程输出已被隐藏
+    # 调用函数，其过程输出已被隐藏
     local unblock_ips=($(getUnblockIP2))
     local IP=""
     
     if [[ ${#unblock_ips[@]} -gt 0 ]]; then
-        # 【修改】使用绿色斜体加粗的颜色代码
+        # 使用绿色斜体加粗的颜色代码
         echo -e "${GREEN_BOLD_ITALIC}检测到以下可用IP地址：${reset}"
         
         local i=1
         for ip in "${unblock_ips[@]}"; do
-            # 【修改】同样应用颜色代码
+            # 同样应用颜色代码
             echo -e "  ${GREEN_BOLD_ITALIC}[$i] $ip${reset}"
             i=$((i + 1))
         done
@@ -1839,7 +1808,7 @@ get_ip() {
         
         if [[ -z "$choice" ]]; then
             IP=${unblock_ips[$((RANDOM % ${#unblock_ips[@]}))]}
-          echo -e "\033[1;3;32m您已选择IP: $IP\033[0m"
+            echo -e "${bold_italic_green}已为您随机选择IP: $IP${reset}"
         
         elif [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#unblock_ips[@]} ]]; then
             IP=${unblock_ips[$((choice - 1))]}
@@ -2225,163 +2194,83 @@ bold_italic_orange() {
     echo -e "\033[1;3;36m$1\033[0m"
 }    
 
-# [NEW] 设置IP自动监控的函数
-setup_ip_monitor() {
-    local monitor_script_path="$WORKDIR/ip_monitor.sh"
-
-    # 创建监控脚本文件
-    cat > "$monitor_script_path" << 'EOF'
-#!/bin/bash
-
-# ===============================================
-# sing-box IP 自动监控与切换脚本
-# ===============================================
-
-# --- 配置路径 ---
-WORKDIR="$HOME/sbox"
-BEI_DIR="$HOME/.beifile"
-CONFIG_TEMPLATE="$WORKDIR/config.template.json"
-CONFIG_FILE="$WORKDIR/config.json"
-STATE_FILE="$BEI_DIR/current_active_ip.txt"
-LINK_FILE="$WORKDIR/list.txt"
-LOG_FILE="$WORKDIR/monitor.log"
-
-# --- 日志记录函数 ---
-log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
-}
-
-# --- 获取可用IP的函数 ---
-getUnblockIPs() {
-    local hostname=$(hostname)
-    # 假设是serv00.com, 从主机名s123.serv00.com中提取123
-    local host_number=$(echo "$hostname" | grep -o -E '[0-9]+')
-    if [[ -z "$host_number" ]]; then
-        # 如果主机名不符合sXXX格式，使用一个默认值或退出
-        log "无法从主机名 $hostname 提取主机编号。"
+# 更换/更新可用IP的函数
+change_ip() {
+    # 检查sing-box是否已安装，以及必要文件是否存在
+    if [ ! -f "$WORKDIR/config.template.json" ] || [ ! -f "$base_dir/current_active_ip.txt" ]; then
+        red "错误：sing-box未安装或配置文件不完整，无法更换IP。"
+        red "请先执行安装流程。"
         return
     fi
-    local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
-    local unblock_ips=()
 
-    for host in "${hosts[@]}"; do
-        # 增加超时和重试以提高稳定性
-        local response=$(curl -s --connect-timeout 5 --max-time 10 "https://ss.fkj.pp.ua/api/getip?host=$host")
-        if [[ $? -ne 0 ]]; then
-            log "API请求失败: $host"
-            continue
-        fi
+    # 获取当前正在使用的IP，以便后续替换
+    local old_ip=$(cat "$base_dir/current_active_ip.txt")
+    echo -e "${bold_italic_yellow}当前正在使用的IP是: ${old_ip}${reset}"
+    
+    # --- 复用get_ip中的交互逻辑来选择新IP ---
+    echo -e "${bold_italic_yellow}正在自动检测所有可用的IP地址...${reset}"
+    
+    local unblock_ips=($(getUnblockIP2))
+    local new_ip="" # 初始化新IP变量
+    
+    if [[ ${#unblock_ips[@]} -gt 0 ]]; then
+        local GREEN_BOLD_ITALIC="\033[1;3;32m"
+        echo -e "${GREEN_BOLD_ITALIC}检测到以下可用IP地址：${reset}"
         
-        if [[ "$response" =~ "Accessible" ]]; then
-            local ip=$(echo "$response" | awk -F "|" '{print $1}')
-            unblock_ips+=("$ip")
+        local i=1
+        for ip in "${unblock_ips[@]}"; do
+            echo -e "  ${GREEN_BOLD_ITALIC}[$i] $ip${reset}"
+            i=$((i + 1))
+        done
+        echo ""
+        
+        read -p "$(echo -e "${bold_italic_yellow}请选择一个新IP (输入编号, 或直接按Enter随机选择): ${reset}")" choice
+        
+        if [[ -z "$choice" ]]; then
+            new_ip=${unblock_ips[$((RANDOM % ${#unblock_ips[@]}))]}
+            echo -e "${bold_italic_green}已为您随机选择新IP: $new_ip${reset}"
+        elif [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#unblock_ips[@]} ]]; then
+            new_ip=${unblock_ips[$((choice - 1))]}
+            echo -e "${bold_italic_green}您已选择新IP: $new_ip${reset}"
+        else
+            red "无效输入，操作已取消。"
+            return
         fi
-    done
-    # 返回去重后的IP列表，每行一个
-    printf "%s\n" "${unblock_ips[@]}" | sort -u
-}
-
-
-# --- 主逻辑开始 ---
-
-# 1. 检查必要文件是否存在
-if [ ! -f "$STATE_FILE" ] || [ ! -f "$CONFIG_TEMPLATE" ]; then
-    log "错误：状态文件或配置模板不存在，退出监控。"
-    exit 1
-fi
-
-# 2. 获取当前正在使用的IP
-current_ip=$(cat "$STATE_FILE")
-if [ -z "$current_ip" ]; then
-    log "错误：当前IP为空，退出监控。"
-    exit 1
-fi
-log "当前活动IP: $current_ip"
-
-# 3. 获取所有当前可用的IP列表
-log "开始检测可用IP..."
-mapfile -t accessible_ips < <(getUnblockIPs)
-
-if [ ${#accessible_ips[@]} -eq 0 ]; then
-    log "警告：未能检测到任何可用的IP地址，本次不执行任何操作。"
-    exit 0
-fi
-
-log "检测到可用IP列表: ${accessible_ips[*]}"
-
-# 4. 判断当前IP是否仍在可用列表中
-is_current_ip_still_ok=false
-for ip in "${accessible_ips[@]}"; do
-    if [[ "$ip" == "$current_ip" ]]; then
-        is_current_ip_still_ok=true
-        break
+    else
+        red "未能检测到任何可用的IP地址，无法更换。请稍后重试。"
+        return
     fi
-done
+    # --- IP选择逻辑结束 ---
 
-# 5. 决策与执行
-if $is_current_ip_still_ok; then
-    log "状态正常：当前IP $current_ip 仍然可用。无需切换。"
-    exit 0
-else
-    log "状态异常：当前IP $current_ip 已失效！"
-    
-    # 从可用列表中选择一个新的IP (这里简单选择第一个作为最优IP)
-    new_ip=${accessible_ips[0]}
-    
-    if [ -z "$new_ip" ] || [[ "$new_ip" == "$current_ip" ]]; then
-        log "错误：无法获取新的可用IP，或者新IP与旧IP相同，切换失败。"
-        exit 1
+    # 检查新旧IP是否相同
+    if [[ "$new_ip" == "$old_ip" ]]; then
+        green "您选择的IP与当前IP相同，无需更改。"
+        return
     fi
 
-    log "准备切换到新的IP: $new_ip"
+    echo "--> 正在更新核心配置文件 (config.json)..."
+    sed "s/__IP_ADDRESS__/${new_ip}/g" "$WORKDIR/config.template.json" > "$WORKDIR/config.json"
+    
+    echo "--> 正在更新节点链接文件 (list.txt)..."
+    sed -i "s/${old_ip}/${new_ip}/g" "$WORKDIR/list.txt"
 
-    # 执行切换操作
-    # a. 从模板生成新的配置文件
-    sed "s/__IP_ADDRESS__/${new_ip}/g" "$CONFIG_TEMPLATE" > "$CONFIG_FILE"
-    log "已根据模板更新配置文件 $CONFIG_FILE"
-
-    # b. 更新节点链接文件
-    sed -i "s/${current_ip}/${new_ip}/g" "$LINK_FILE"
-    log "已更新 $LINK_FILE 中的节点链接。"
-
-    # c. 重启 sing-box 服务
-    log "正在重启sing-box服务..."
+    echo "--> 正在更新当前IP状态记录..."
+    echo "$new_ip" > "$base_dir/current_active_ip.txt"
+    
+    echo "--> 正在重启sing-box服务以应用新IP..."
     pkill -f "$WORKDIR/web"
     sleep 2
-    nohup "$WORKDIR/web" run -c "$CONFIG_FILE" >/dev/null 2>&1 &
+    nohup "$WORKDIR/web" run -c "$WORKDIR/config.json" >/dev/null 2>&1 &
     
-    # 检查重启是否成功
+    # 验证重启结果
     if pgrep -f "$WORKDIR/web" > /dev/null; then
-        log "服务重启成功！"
-        # d. 更新状态文件
-        echo "$new_ip" > "$STATE_FILE"
-        log "切换完成！当前活动IP已更新为 $new_ip"
+         green "服务重启成功！IP已成功更换为: ${new_ip}"
+         echo "您现在可以通过 '3. 查看节点信息' 获取更新后的链接。"
     else
-        log "错误：服务重启失败！请检查问题。"
-    fi
-fi
-
-EOF
-
-    chmod +x "$monitor_script_path"
-    green "IP监控脚本已创建于: $monitor_script_path"
-
-    # 设置cron定时任务
-    # 检查任务是否已存在
-    if crontab -l 2>/dev/null | grep -q "ip_monitor.sh"; then
-        yellow "IP监控的定时任务已经存在，无需重复添加。"
-    else
-        # 添加新任务
-        (crontab -l 2>/dev/null; echo "*/15 * * * * /bin/bash $monitor_script_path") | crontab -
-        if [[ $? -eq 0 ]]; then
-            green "成功添加定时任务！脚本将每15分钟自动检测并切换IP。"
-            green "您可以通过 'cat $WORKDIR/monitor.log' 查看运行日志。"
-        else
-            red "添加定时任务失败，请尝试手动添加。"
-            red "手动添加命令: (crontab -l 2>/dev/null; echo \"*/15 * * * * /bin/bash $monitor_script_path\") | crontab -"
-        fi
+         red "错误：服务重启失败！请检查问题，或尝试手动重启。"
     fi
 }
+
 
 # 主菜单
 menu() {
@@ -2398,11 +2287,11 @@ menu() {
     purple "\033[1;3m*****转载请著名出处，请勿滥用*****\033[0m"
     echo ""  
     get_server_info
-  echo ""
+    echo ""
 # 设置正方形大小
 size=8
-content1=$(check_singbox_installed)  # 调用第一个函数获取内容
-content2=$(check_web_status)  # 调用第二个函数获取内容
+content1=$(check_singbox_installed)
+content2=$(check_web_status)
 
 # 固定宽度
 max_width=30
@@ -2411,11 +2300,11 @@ for ((i=0; i<size; i++)); do
     if [[ $i -eq 0 || $i -eq $((size-1)) ]]; then
         echo -e "\033[1;33m=============================\033[0m"
     elif [[ $i -eq 3 ]]; then
-        printf "||   %-34s   ||\n" "$content1"  # 第一行内容左对齐，固定宽度
+        printf "||   %-34s   ||\n" "$content1"
     elif [[ $i -eq 5 ]]; then
-        printf "||   %-28s    ||\n" "$content2"  # 第二行内容左对齐，固定宽度
+        printf "||   %-28s    ||\n" "$content2"
     else
-        echo -e "\033[1;33m||                         ||\033[0m"  # 中间部分
+        echo -e "\033[1;33m||                         ||\033[0m"
     fi
 done
    echo ""
@@ -2435,28 +2324,29 @@ done
    echo "==============="
    pink "\033[1;3m8. 系统初始化\033[0m"
    echo "==============="
-   # [NEW] 新增菜单项
-   bold_italic_orange "\033[1;3m9. 开启/更新 IP 自动监控\033[0m"
+   bold_italic_orange "\033[1;3m9. 更换/更新可用 IP\033[0m"
    echo "==============="
    red "\033[1;3m0. 退出脚本\033[0m"
    echo "==========="
- # 清理输入缓冲区
-   #     while read -t 0 -n 1; do : ; done
    reading "请输入选择(0-9): " choice
    echo ""
    case "${choice}" in
         1)
             install_singbox
-             read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
+            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
             clear
             ;;
         2)
             setup_socks5
-             read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
+            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
             clear
             ;;
         3)
-             cat $WORKDIR/list.txt
+            if [ -f "$WORKDIR/list.txt" ]; then
+                cat "$WORKDIR/list.txt"
+            else
+                red "节点信息文件不存在，请先安装服务。"
+            fi
             read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
             clear
             ;;
@@ -2485,19 +2375,17 @@ done
             read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
             clear
             ;;
-        # [NEW] 新增case
         9)
-            setup_ip_monitor
+            change_ip
             read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
             clear
             ;;
         0) exit 0 ;;   
       *)
             red "\033[1;3m无效的选项，请输入 0 到 9\033[0m"
-            echo ""
+            sleep 2
             ;;
     esac
     done
-   
 }
 menu
