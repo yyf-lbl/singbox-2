@@ -2194,6 +2194,8 @@ bold_italic_orange() {
     echo -e "\033[1;3;36m$1\033[0m"
 }    
 
+# <---- 用这个【最终修复版】替换旧的 change_ip 函数 ---->
+
 # 更换/更新可用IP的函数
 change_ip() {
     # 检查sing-box是否已安装，以及必要文件是否存在
@@ -2245,14 +2247,11 @@ change_ip() {
     fi
 
     echo "--> 正在更新核心配置文件 (config.json)..."
-    # 这里使用 # 作为分隔符也更安全
-    sed -i "s#__IP_ADDRESS__#${new_ip}#g" "$WORKDIR/config.template.json"
-    # 从模板重新生成config.json
     sed "s/__IP_ADDRESS__/${new_ip}/g" "$WORKDIR/config.template.json" > "$WORKDIR/config.json"
     
     echo "--> 正在更新节点链接文件 (list.txt)..."
-    # 【关键修复】将分隔符从 / 改为 #
-    sed -i "s#${old_ip}#${new_ip}#g" "$WORKDIR/list.txt"
+    # 【最终修复】为-i选项提供一个空的参数 ''，以兼容BSD sed
+    sed -i '' "s#${old_ip}#${new_ip}#g" "$WORKDIR/list.txt"
 
     echo "--> 正在更新当前IP状态记录..."
     echo "$new_ip" > "$base_dir/current_active_ip.txt"
