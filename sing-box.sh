@@ -291,7 +291,7 @@ cleanup_and_delete() {
         echo -n -e "\033[1;3;33m准备初始化系统，请稍后...\033[0m\n"
         sleep 2
 
-        read -p "$(echo -e "\033[1;3;33m您确定要还原系统吗？\033[0m\n\033[1;31;3m(警告:此操作将会删除系统所有文件、进程和定时任务!)\033[0m\n\033[1;3;33m(y/n Enter默认y): \033[0m")" confirmation
+        read -p "$(echo -e "\033[1;3;33m您确定要还原系统吗？\033[0m\n\033[1;31;3m(警告:此操作将会删除系统所有文件、进程和面板中的定时任务!)\033[0m\n\033[1;3;33m(y/n Enter默认y): \033[0m")" confirmation
         confirmation=${confirmation:-y}
         sleep 2
         
@@ -305,9 +305,26 @@ cleanup_and_delete() {
         pkill -u $(whoami) >/dev/null 2>&1
         sleep 1
 
-        # 【新增】清空用户的定时任务
-        echo "--> 正在清空定时任务 (cron jobs)..."
-        crontab -r >/dev/null 2>&1
+        # 【最终修复】通过 devil 工具清空面板中的定时任务
+        echo "--> 正在清空面板中的定时任务 (Cron Jobs)..."
+        
+        # 获取所有定时任务的ID (跳过标题行，只取第一列)
+        local cron_ids=$(devil cron list | awk 'NR>1 {print $1}')
+        
+        # 检查是否有任务需要删除
+        if [[ -n "$cron_ids" ]]; then
+            # 循环并删除每一个任务
+            for id in $cron_ids; do
+                # 确保ID是数字，防止意外
+                if [[ "$id" =~ ^[0-9]+$ ]]; then
+                    echo "    -> 正在删除面板定时任务 ID: $id"
+                    devil cron del "$id" >/dev/null 2>&1
+                fi
+            done
+            echo "--> 面板中的所有定时任务已成功清空。"
+        else
+            echo "--> 面板中没有发现需要清空的定时任务。"
+        fi
         sleep 1
 
         # 删除除排除目录以外的所有内容
