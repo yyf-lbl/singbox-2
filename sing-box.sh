@@ -1810,7 +1810,7 @@ get_ip() {
         
         if [[ -z "$choice" ]]; then
             IP=${unblock_ips[$((RANDOM % ${#unblock_ips[@]}))]}
-            echo -e "${bold_italic_green}已为您随机选择IP: $IP${reset}"
+            echo -e "\033[1;3;32m已为您随机选择IP: $IP\033[0m"
         
         elif [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#unblock_ips[@]} ]]; then
             IP=${unblock_ips[$((choice - 1))]}
@@ -2262,7 +2262,7 @@ change_ip() {
     nohup "$WORKDIR/web" run -c "$WORKDIR/config.json" >/dev/null 2>&1 &
     
     if pgrep -f "$WORKDIR/web" > /dev/null; then
-        green "服务重启成功！IP已成功更换为: ${new_ip}"
+       echo -e "\033[1;3;32m服务重启成功！IP已成功更换为: ${new_ip}\033[0m"
         echo ""
         bold_italic_purple "以下是更新后的节点信息："
         
