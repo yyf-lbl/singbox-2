@@ -1721,52 +1721,61 @@ run_sb() {
 }
 
 getUnblockIP2() {
-    local hostname=$(hostname)                               # s6.serv00.com
-    local host_number=$(echo "$hostname" | grep -oE '[0-9]+')
-    local user_domain="yy-falbl.serv00.net"                  # 你自己的域名，可改为动态检测
+    # 获取当前主机的主机名
+    local hostname=$(hostname)
 
-    # 检测列表：本机、web、cache、用户域名
-    local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com" "$user_domain")
+    # 从主机名中提取出主机编号（即主机名的数字部分）
+    local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
 
+    # 构建一个主机名数组，包含 cache、web 和当前主机
+    local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
+
+    # 定义一个数组，用于存储所有未被墙的IP
     local unblock_ips=()
 
-    echo "🧭 正在检测以下主机：${hosts[*]}"
+    echo "🧭 正在检测主机: ${hosts[*]}"
 
+    # 遍历主机名称数组
     for host in "${hosts[@]}"; do
+        # 使用 curl 命令调用 API，获取主机的 IP 和状态信息
         local response
-        response=$(curl -s "https://ss.fkj.pp.ua/api/getip?host=$host")
+        response=$(curl -s "https://ss.fkj.pp.ua/api/getip?host=$host") || continue
 
+        # 检查 API 返回的响应是否为空
         if [[ -z "$response" ]]; then
-            echo "⚠️ 无响应：$host"
+            echo "⚠️  主机 ${host} 无响应"
             continue
         fi
 
+        # 检查 API 返回的响应中是否包含 "not found" 字符串
         if [[ "$response" =~ "not found" ]]; then
-            echo "❌ 未识别主机：$host"
+            echo "❌ 未识别主机 ${host}"
             continue
         fi
 
+        # 从 API 返回的数据中提取出 IP 地址和状态信息
         local ip status
-        ip=$(awk -F "|" '{print $1}' <<< "$response")
-        status=$(awk -F "|" '{print $2}' <<< "$response")
+        ip=$(echo "$response" | awk -F "|" '{print $1}')
+        status=$(echo "$response" | awk -F "|" '{print $2}')
 
-        echo "🔎 $host → $ip ($status)"
+        echo "🔎 检测 ${host} → ${ip} (${status})"
 
+        # 仅当状态是 "Accessible" 时，才添加到 unblock_ips 数组
         if [[ "$status" == "Accessible" ]]; then
             unblock_ips+=("$ip")
         fi
-    done
+    done 
 
+    # 如果没有找到任何未被墙的 IP 地址
     if [[ ${#unblock_ips[@]} -eq 0 ]]; then
-        echo "🚫 未找到任何可访问 IP"
-        return 1
+        echo "🚫 未找到有效的未被墙 IP 地址"
+        return
     fi
 
-    echo "✅ 可用 IP: ${unblock_ips[*]}"
+    # 返回未被墙的 IP 地址列表
+    echo "✅ 可用 IP: ${unblock_ips[@]}"
     echo "${unblock_ips[@]}"
 }
-
-
 
 get_ip() {
     # 提示用户选择方式: 输入 y 启用备用 IP，回车自动检测主机地址，或手动输入 IP
