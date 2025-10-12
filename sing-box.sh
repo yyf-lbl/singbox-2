@@ -307,22 +307,24 @@ cleanup_and_delete() {
         # 终止当前用户的所有进程
         echo -e "${RED_BOLD_ITALIC}--> 正在终止所有用户进程...${RESET}"
         pkill -u $(whoami) >/dev/null 2>&1
-        sleep 1
+        sleep 3
 
         # 明确告知用户需要手动删除定时任务
-        echo -e "${YELLOW_BOLD_ITALIC}--> 重要提示: 您的服务器环境不支持通过脚本自动删除定时任务。${RESET}"
-        echo -e "${YELLOW_BOLD_ITALIC}--> 请在初始化完成后，务必手动登录网页控制面板，清空所有 Cron Jobs。${RESET}"
-        sleep 5 
+        echo -e "${YELLOW_BOLD_ITALIC}--> 重要提示: 所有用户进程已终止。${RESET}"
+       # echo -e "${YELLOW_BOLD_ITALIC}--> 请在初始化完成后，务必手动登录网页控制面板，清空所有 Cron Jobs。${RESET}"
+        sleep 3 
 
         # 删除除排除目录以外的所有内容
         echo -e "${RED_BOLD_ITALIC}--> 正在删除用户主目录下的所有文件...${RESET}"
+          sleep 3 
+
         IFS=':' read -r -a exclude_array <<< "$exclude_dirs"
         find "$target_dir" -mindepth 1 -maxdepth 1 \( -name "${exclude_array[0]}" -o -name "${exclude_array[1]}" \) -prune -o -exec rm -rf {} +
 
         local remaining_items=$(find "$target_dir" -mindepth 1 -maxdepth 1 | grep -v -e "${exclude_array[0]}" -e "${exclude_array[1]}")
         if [ -z "$remaining_items" ]; then
             # 在最终的成功信息里再次提醒
-            echo -n -e "\033[1;3;32m已成功初始化系统! 请记得手动清理网页面板中的定时任务。\033[0m\n"
+            echo -n -e "\033[1;3;32m已成功初始化系统! \033[0m\n"
             exit 0
         else
             echo "删除操作出现问题，请检查是否有权限问题或其他错误。"
