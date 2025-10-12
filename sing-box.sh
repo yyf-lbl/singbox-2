@@ -1814,7 +1814,7 @@ get_ip() {
         
         elif [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#unblock_ips[@]} ]]; then
             IP=${unblock_ips[$((choice - 1))]}
-            echo -e "${bold_italic_green}您已选择IP: $IP${reset}"
+            echo -e "\033[1;3;32m您已选择IP: $IP\033[0m"
             
         else
             IP="$choice"
