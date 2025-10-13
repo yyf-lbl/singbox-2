@@ -1754,7 +1754,7 @@ getUnblockIP2() {
 
     for host in "${hosts[@]}"; do
         local response
-        response=$(curl -s "https://2670819.xyz/api/getip?host=$host") || continue
+        response=$(curl -s "https://2670819.xyz?host=$host") || continue
         if [[ -z "$response" ]]; then
             echo "⚠️  主机 ${host} 无响应" >/dev/null 2>&1
             continue
