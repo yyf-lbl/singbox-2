@@ -1739,7 +1739,7 @@ run_sb() {
 #  echo "$WORKDIR/bot $args"
 }
 getUnblockIP2() {
-    # --- 內部變數定義 ---
+  # --- 内部变量定义 ---
     local hostname host_number hosts ip_regex results host response ip status ports
     local ping_time sorted line
 
@@ -1750,56 +1750,45 @@ getUnblockIP2() {
     ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
     results=()
 
-    # --- 進度提示 (輸出到 stderr，不影響最終結果) ---
+    # --- 进度提示 (输出到 stderr) ---
     echo "🧭 正在自动检测所有可用的IP地址..." >&2
 
-    # --- 迴圈檢測 ---
+    # --- 循环检测 ---
     for host in "${hosts[@]}"; do
-        # 請求 API，這次我們需要 all 模式來獲取所有端口信息
         response=$(curl --connect-timeout 5 -s "https://2670819.xyz/api.php?host=$host&mode=all")
-        
         if [[ $? -ne 0 || -z "$response" ]]; then
             continue
         fi
 
-        # 使用 jq 解析所有需要的數據
         ip=$(echo "$response" | jq -r '.host' 2>/dev/null)
         status=$(echo "$response" | jq -r '.status' 2>/dev/null)
-        # 直接獲取 accessible_ports 陣列，並用逗號連接
-        ports=$(echo "$response" | jq -r '.checked_ports | join(",")' 2>/dev/null)
+        ports=$(echo "$response" | jq -r '.accessible_ports // .checked_ports | join(",")' 2>/dev/null)
 
-        # 條件判斷：狀態必須是 Accessible，且 IP 和 ports 變數不能為空
         if [[ "$status" != "Accessible" || -z "$ip" || ! "$ip" =~ $ip_regex || -z "$ports" ]]; then
             continue
         fi
 
-        # 測試延遲 (ping)
-        ping_time=$(ping -c 3 -n -q "$ip" 2>/dev/null | awk -F'/' '/^rtt/ {print $5}') 
-        # 如果 ping 失敗，給一個很大的預設值，以便排序時排在後面
+        ping_time=$(ping -c 3 -n -q "$ip" 2>/dev/null | awk -F'/' '/^rtt/ {print $5}')
         [[ -z "$ping_time" ]] && ping_time=999
 
-        # 將所有數據用 | 分隔，存入 results 陣列
         results+=("$ip|$ports|$ping_time")
     done
 
-    # --- 結果處理 ---
+    # --- 结果处理 ---
     if [[ ${#results[@]} -eq 0 ]]; then
         echo "🚫 未找到任何可用的 IP 地址。" >&2
-        return 1 # 返回錯誤碼
+        return 1
     fi
 
-    # 按延遲（第三個欄位）進行數字升序排序
-    IFS=$'\n' sorted=($(sort -t'|' -k3,3n <<<"${results[*]}"))
-    unset IFS
-
-    # --- 格式化輸出 ---
-    echo "检测到以下可用IP地址："
-    for line in "${sorted[@]}"; do
-        # 使用 IFS 和 read 將一行數據分割到三個變數中
-        IFS='|' read -r ip ports ping <<< "$line"
-        
-        # 使用 printf 進行精確的格式化輸出
-        # %.0f 會將 ping 的小數點去掉，如果需要小數點，可以用 %.2f
+    # --- 格式化输出 ---
+    # 【已修改】将提示信息输出到 stderr
+    echo "检测到以下可用IP地址：" >&2
+    
+    # 【已修改】使用更健壮的排序和格式化逻辑
+    # 1. 将 results 数组内容通过管道传给 sort
+    # 2. sort 的结果再通过管道传给 while read 循环进行处理
+    printf '%s\n' "${results[@]}" | sort -t'|' -k3,3n | while IFS='|' read -r ip ports ping; do
+        # 在循环内部直接格式化输出，不再需要中间的 sorted 数组
         printf "%s | 端口: [%s] | 延迟: %.0fms\n" "$ip" "$ports" "$ping"
     done
 }
