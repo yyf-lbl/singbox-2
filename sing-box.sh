@@ -1740,46 +1740,45 @@ run_sb() {
 }
 
 getUnblockIP2() {
-    # 获取当前主机的主机名
     local hostname=$(hostname)
-    # 从主机名中提取出主机编号
-    local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
-    # 构建一个主机名数组
+    local host_number=$(echo "$hostname" | grep -oP '\d+')
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
     local unblock_ips=()
-    local ip_regex="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
+    local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
 
-    # 将所有诊断信息重定向到/dev/null，以隐藏它们
-    echo "🧭 正在检测主机: ${hosts[*]}" >/dev/null 2>&1
+    echo "🧭 正在检测主机: ${hosts[*]}"
 
     for host in "${hosts[@]}"; do
         local response
         response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
         if [[ -z "$response" ]]; then
-            echo "⚠️  主机 ${host} 无响应" >/dev/null 2>&1
+            echo "⚠️  主机 ${host} 无响应"
             continue
         fi
         if [[ "$response" =~ "not found" ]]; then
-            echo "❌ 未识别主机 ${host}" >/dev/null 2>&1
+            echo "❌ 未识别主机 ${host}"
             continue
         fi
+
         local ip=$(echo "$response" | awk -F "|" '{print $1}')
         local status=$(echo "$response" | awk -F "|" '{print $2}')
-        echo "🔎 检测 ${host} → ${ip} (${status})" >/dev/null 2>&1
-        if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
+        echo "🔎 检测 ${host} → ${ip} (${status})"
+
+        # ✅ 匹配 Accessible 开头的状态
+        if [[ "$status" == Accessible* && "$ip" =~ $ip_regex ]]; then
             unblock_ips+=("$ip")
+            echo "✅ 添加可用 IP: $ip"
         else
-            echo "⚠️  跳过无效条目: ${ip}" >/dev/null 2>&1
+            echo "⚠️  跳过无效条目: ${ip} (${status})"
         fi
-    done 
+    done
 
     if [[ ${#unblock_ips[@]} -eq 0 ]]; then
-        echo "🚫 未找到有效的未被墙 IP 地址" >/dev/null 2>&1
+        echo "🚫 未找到有效的未被墙 IP 地址"
         return
     fi
-    echo "✅ 可用 IP: ${unblock_ips[@]}" >/dev/null 2>&1
-    
-    # 只输出纯净的IP列表
+
+    # 输出纯净 IP 列表
     echo "${unblock_ips[@]}"
 }
 
