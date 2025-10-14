@@ -1738,7 +1738,6 @@ run_sb() {
   fi
 #  echo "$WORKDIR/bot $args"
 }
-
 getUnblockIP2() {
     local hostname=$(hostname)
     local host_number=$(echo "$hostname" | sed 's/[^0-9]//g')
@@ -1746,38 +1745,38 @@ getUnblockIP2() {
     local unblock_ips=()
     local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
 
-    echo "🧭 正在检测主机: ${hosts[*]}"
+    echo "正在自动检测所有可用的IP地址..."
 
     for host in "${hosts[@]}"; do
         local response
         response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
         if [[ -z "$response" ]]; then
-            echo "⚠️  主机 ${host} 无响应"
             continue
         fi
         if [[ "$response" =~ "not found" ]]; then
-            echo "❌ 未识别主机 ${host}"
             continue
         fi
 
         local ip=$(echo "$response" | awk -F "|" '{print $1}')
         local status=$(echo "$response" | awk -F "|" '{print $2}')
-        echo "🔎 检测 ${host} → ${ip} (${status})"
 
+        # 匹配 Accessible 开头（兼容 "Accessible (port 22)" 等）
         if [[ "$status" == Accessible* && "$ip" =~ $ip_regex ]]; then
             unblock_ips+=("$ip")
-            echo "✅ 添加可用 IP: $ip"
-        else
-            echo "⚠️  跳过无效条目: ${ip} (${status})"
         fi
     done
 
     if [[ ${#unblock_ips[@]} -eq 0 ]]; then
-        echo "🚫 未找到有效的未被墙 IP 地址"
+        echo "未能检测到任何可用的IP地址，无法更换。请稍后重试。"
         return
     fi
 
-    echo "${unblock_ips[@]}"
+    echo "检测到以下可用IP地址："
+    local i=1
+    for ip in "${unblock_ips[@]}"; do
+        echo "  [${i}] ${ip}"
+        ((i++))
+    done
 }
 
 get_ip() {
