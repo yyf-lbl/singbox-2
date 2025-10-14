@@ -1739,46 +1739,80 @@ run_sb() {
 #  echo "$WORKDIR/bot $args"
 }
 getUnblockIP2() {
+    # 获取当前主机名
     local hostname=$(hostname)
     local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
+    
+    local unblock_ips=()
     local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
-    declare -A ip_scores
+
+    echo "🧭 正在检测主机: ${hosts[*]} ..."
+
+    # 用关联数组存储 IP 信息
     declare -A ip_ports
     declare -A ip_latency
-
-    echo "🧭 正在检测主机: ${hosts[*]} ..." >/dev/null 2>&1
+    declare -A ip_score
 
     for host in "${hosts[@]}"; do
-        local response ip status ports ping_ms score port_list
+        local response
         response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
-        [[ -z "$response" ]] && continue
-
-        ip=$(echo "$response" | jq -r '.host') >/dev/null 2>&1
-        status=$(echo "$response" | jq -r '.status') >/dev/null 2>&1
-        port_list=$(echo "$response" | jq -r '.checked_ports | join(",")') >/dev/null 2>&1
-        ports=$(echo "$response" | jq -r '.checked_ports | length') >/dev/null 2>&1
-
-        if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
-            ping_ms=$(ping -c 3 -W 1 "$ip" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
-            ping_ms=${ping_ms:-1000}
-
-            score=$((ports * 1000 - ping_ms))
-            ip_scores["$ip"]=$score
-            ip_ports["$ip"]=$port_list
-            ip_latency["$ip"]=$ping_ms
+        if [[ -z "$response" ]]; then
+            continue
         fi
+
+        # 使用 jq 解析 JSON
+        local ip status ports
+        ip=$(echo "$response" | jq -r '.host')
+        status=$(echo "$response" | jq -r '.status')
+        ports=$(echo "$response" | jq -r '.checked_ports | join(",")')
+
+        if [[ "$status" != "Accessible" || ! "$ip" =~ $ip_regex ]]; then
+            continue
+        fi
+
+        # 测试平均延迟 (ms)
+        local ping_ms
+        ping_ms=$(ping -c 3 -W 1 "$ip" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
+        ping_ms=${ping_ms:-1000} # 如果 ping 失败，赋值高延迟
+
+        # 计算评分：端口数量越多越好，延迟越低越好
+        # 注意 Bash 算术不支持浮点，使用 awk
+        local port_count=$(echo "$ports" | awk -F',' '{print NF}')
+        local score
+        score=$(awk -v p="$port_count" -v ms="$ping_ms" 'BEGIN{printf "%f", p*1000 - ms}')
+
+        unblock_ips+=("$ip")
+        ip_ports["$ip"]="$ports"
+        ip_latency["$ip"]="$ping_ms"
+        ip_score["$ip"]="$score"
     done
 
-    if [[ ${#ip_scores[@]} -eq 0 ]]; then
-        echo "🚫 未找到有效的未被墙 IP 地址" >/dev/null 2>&1
-        return
+    if [[ ${#unblock_ips[@]} -eq 0 ]]; then
+        echo "🚫 未找到可用 IP"
+        return 1
     fi
 
-    echo "检测到以下可用IP地址及端口/延迟信息："
-    for ip in "${!ip_scores[@]}"; do
-        echo "$ip | 端口: [${ip_ports[$ip]}] | 延迟: ${ip_latency[$ip]}ms"
-    done | sort -t':' -k3 -n
+    # 按评分排序
+    IFS=$'\n' sorted_ips=($(for ip in "${unblock_ips[@]}"; do
+        echo -e "${ip_score[$ip]}\t$ip"
+    done | sort -nr | awk '{print $2}'))
+    unset IFS
+
+    echo "✅ 检测到以下可用 IP："
+    local index=1
+    for ip in "${sorted_ips[@]}"; do
+        echo "  [$index] $ip (端口: ${ip_ports[$ip]}, 平均延迟: ${ip_latency[$ip]}ms)"
+        ((index++))
+    done
+
+    # 自动选择最优 IP
+    local best_ip="${sorted_ips[0]}"
+    echo
+    echo "🌟 自动选择最优 IP: $best_ip (端口: ${ip_ports[$best_ip]}, 延迟: ${ip_latency[$best_ip]}ms)"
+
+    # 只输出纯 IP 列表，如果需要脚本调用
+    echo "${sorted_ips[@]}"
 }
 
 get_ip() {
