@@ -1739,39 +1739,42 @@ run_sb() {
 #  echo "$WORKDIR/bot $args"
 }
 getUnblockIP2() {
-     local hostname=$(hostname)
+    # 获取当前主机名
+    local hostname=$(hostname)
+    # 提取主机编号
     local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
+    # 构建要检测的主机数组
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
     local unblock_ips=()
-    declare -A ip_scores
+    local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
 
-    echo "🧭 正在检测所有可用 IP..." 
+    echo "🧭 正在检测主机: ${hosts[*]} ..." >/dev/null 2>&1
 
     for host in "${hosts[@]}"; do
         local response
         response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
-        local ip=$(echo "$response" | awk -F "|" '{print $1}' | awk -F' ' '{print $1}')
-        local status=$(echo "$response" | awk -F "|" '{print $2}')
-        local ports=$(echo "$response" | awk -F'[][]' '{print $2}' | awk -F',' '{print NF}')
-        
-        if [[ "$status" == "Accessible" && "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            local ping_ms
-            ping_ms=$(ping -c 3 -W 1 "$ip" | tail -1 | awk -F '/' '{print $5}')
-            ping_ms=${ping_ms:-1000} # ping 失败就设高值
-            local score=$((ports * 1000 - ping_ms))
-            ip_scores["$ip"]=$score
+        if [[ -z "$response" ]]; then
+            continue
+        fi
+
+        # 使用 jq 解析 JSON
+        local ip
+        local status
+        ip=$(echo "$response" | jq -r '.host') >/dev/null 2>&1
+        status=$(echo "$response" | jq -r '.status') >/dev/null 2>&1
+
+        if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
+            unblock_ips+=("$ip")
         fi
     done
 
-    if [[ ${#ip_scores[@]} -eq 0 ]]; then
-        echo "🚫 未找到有效的可用 IP"
+    if [[ ${#unblock_ips[@]} -eq 0 ]]; then
+        echo "🚫 未找到有效的未被墙 IP 地址" >/dev/null 2>&1
         return
     fi
 
-    # 按分数排序输出，降序
-    for ip in "${!ip_scores[@]}"; do
-        echo "$ip|${ip_scores[$ip]}"
-    done | sort -t'|' -k2 -nr | awk -F'|' '{print $1}'
+    # 只输出可用 IP
+    echo "${unblock_ips[@]}"
 }
 
 get_ip() {
