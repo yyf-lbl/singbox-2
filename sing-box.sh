@@ -1745,83 +1745,71 @@ getUnblockIP2() {
     local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
     local results=()
 
-    echo "🧭 正在检测主机: ${hosts[*]} ..."
+    echo "🧭 正在检测主机..." >&2
 
     for host in "${hosts[@]}"; do
-        local ip
-        # 通过 API 获取 IP
-        ip=$(curl -s "https://2670819.xyz/api.php?host=$host" | jq -r '.host')
-        local status
-        status=$(curl -s "https://2670819.xyz/api.php?host=$host" | jq -r '.status')
+        local response
+        response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
+        if [[ -z "$response" ]]; then
+            continue
+        fi
+
+        # 使用 jq 解析 JSON
+        local ip status ports
+        ip=$(echo "$response" | jq -r '.host') || continue
+        status=$(echo "$response" | jq -r '.status') || continue
+        ports=$(echo "$response" | jq -r '.checked_ports | join(",")') || continue
 
         if [[ "$status" != "Accessible" || ! "$ip" =~ $ip_regex ]]; then
             continue
         fi
 
-        local ports=(22 80 443)
-        local open_ports=()
-        local total_latency=0
-        local count=0
+        # 测试延迟（平均三次 ping）
+        local ping_time
+        ping_time=$(ping -c 3 -n -q "$ip" 2>/dev/null | awk -F'/' '/^rtt/ {print $5}') 
+        [[ -z "$ping_time" ]] && ping_time=999
 
-        for port in "${ports[@]}"; do
-            local start=$(date +%s.%N)
-            timeout 1 bash -c "cat < /dev/null > /dev/tcp/$ip/$port" &>/dev/null
-            if [[ $? -eq 0 ]]; then
-                local end=$(date +%s.%N)
-                local latency=$(awk "BEGIN {print ($end - $start)*1000}")
-                total_latency=$(awk "BEGIN {print $total_latency + $latency}")
-                ((count++))
-                open_ports+=("$port")
-            fi
-        done
-
-        if [[ ${#open_ports[@]} -eq 0 ]]; then
-            continue
-        fi
-
-        local avg_latency=$(awk "BEGIN {print $total_latency / $count}")
-        results+=("$ip|$(IFS=,; echo "${open_ports[*]}")|$avg_latency")
+        results+=("$ip|$ports|$ping_time")
     done
 
     if [[ ${#results[@]} -eq 0 ]]; then
-        echo "🚫 未找到可用 IP 地址"
-        return
+        echo >&2 "🚫 未找到可用 IP 地址"
+        return 1
     fi
 
-    # 排序：延迟升序，端口数降序
+    # 按端口数量（降序）+ 延迟（升序）排序
     IFS=$'\n' sorted=($(for line in "${results[@]}"; do
+        local ip ports ping
         ip=$(echo "$line" | cut -d'|' -f1)
         ports=$(echo "$line" | cut -d'|' -f2)
-        latency=$(echo "$line" | cut -d'|' -f3)
-        port_count=$(echo "$ports" | awk -F, '{print NF}')
-        echo -e "$latency\t$port_count\t$ip\t$ports"
-    done | sort -n -k1,1 -k2,2nr))
+        ping=$(echo "$line" | cut -d'|' -f3)
+        local port_count=$(echo "$ports" | awk -F',' '{print NF}')
+        echo "$port_count|$ping|$ip|$ports"
+    done | sort -t'|' -k1,1nr -k2,2n))
     unset IFS
 
-    echo "✅ 检测到以下可用 IP："
+    echo "检测到以下可用 IP 地址："
     local index=1
-    for item in "${sorted[@]}"; do
-        latency=$(echo "$item" | awk '{print $1}')
-        ip=$(echo "$item" | awk '{print $3}')
-        ports=$(echo "$item" | awk '{print $4}')
-        echo "  [$index] $ip (端口: $ports, 平均延迟: ${latency}ms)"
-        ((index++))
+    local best_ip=""
+    for line in "${sorted[@]}"; do
+        local port_count ping ip ports
+        port_count=$(echo "$line" | cut -d'|' -f1)
+        ping=$(echo "$line" | cut -d'|' -f2)
+        ip=$(echo "$line" | cut -d'|' -f3)
+        ports=$(echo "$line" | cut -d'|' -f4)
+        printf "  [%d] %s (端口: %s, 延迟: %.3f ms)\n" "$index" "$ip" "$ports" "$ping"
+        [[ $index -eq 1 ]] && best_ip="$ip|$ports|$ping"
+        index=$((index+1))
     done
 
     # 自动选择最优 IP
-    best_ip=$(echo "${sorted[0]}" | awk '{print $3}')
-    best_ports=$(echo "${sorted[0]}" | awk '{print $4}')
-    best_latency=$(echo "${sorted[0]}" | awk '{print $1}')
-    echo "🌟 自动选择最优 IP: $best_ip (端口: $best_ports, 延迟: ${best_latency}ms)"
+    echo "🌟 自动选择最优 IP:"
+    IFS='|' read -r best_ip_addr best_ports best_ping <<< "$best_ip"
+    printf "  %s (端口: %s, 延迟: %.3f ms)\n" "$best_ip_addr" "$best_ports" "$best_ping"
 
-    # 输出纯净 IP 列表
-    echo "可用 IP 列表:"
-    for item in "${sorted[@]}"; do
-        ip=$(echo "$item" | awk '{print $3}')
-        echo "$ip"
-    done
+    # 输出干净的 IP 列表
+    echo "${sorted[@]}" | awk -F'|' '{print $3}'
 }
-
 
 get_ip() {
     # 确保颜色变量可用
