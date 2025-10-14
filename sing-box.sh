@@ -1739,45 +1739,35 @@ run_sb() {
 #  echo "$WORKDIR/bot $args"
 }
 getUnblockIP2() {
-    # 获取当前主机名
     local hostname=$(hostname)
     local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
-    
     local unblock_ips=()
     local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
 
     echo "🧭 正在检测主机: ${hosts[*]} ..."
 
-    # 用关联数组存储 IP 信息
     declare -A ip_ports
     declare -A ip_latency
     declare -A ip_score
 
     for host in "${hosts[@]}"; do
-        local response
+        local response ip status ports
         response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
-        if [[ -z "$response" ]]; then
-            continue
-        fi
+        if [[ -z "$response" ]]; then continue; fi
 
-        # 使用 jq 解析 JSON
-        local ip status ports
         ip=$(echo "$response" | jq -r '.host')
         status=$(echo "$response" | jq -r '.status')
         ports=$(echo "$response" | jq -r '.checked_ports | join(",")')
 
-        if [[ "$status" != "Accessible" || ! "$ip" =~ $ip_regex ]]; then
-            continue
-        fi
+        if [[ "$status" != "Accessible" || ! "$ip" =~ $ip_regex ]]; then continue; fi
 
-        # 测试平均延迟 (ms)
+        # ping 三次取平均延迟 (ms)
         local ping_ms
-        ping_ms=$(ping -c 3 -W 1 "$ip" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
-        ping_ms=${ping_ms:-1000} # 如果 ping 失败，赋值高延迟
+        ping_ms=$(ping -c 3 -W 1 "$ip" 2>/dev/null | awk -F'/' 'END{print $5}')
+        ping_ms=${ping_ms:-1000} # ping 失败赋值高延迟
 
-        # 计算评分：端口数量越多越好，延迟越低越好
-        # 注意 Bash 算术不支持浮点，使用 awk
+        # 评分 = 端口数量*1000 - 延迟
         local port_count=$(echo "$ports" | awk -F',' '{print NF}')
         local score
         score=$(awk -v p="$port_count" -v ms="$ping_ms" 'BEGIN{printf "%f", p*1000 - ms}')
@@ -1806,12 +1796,11 @@ getUnblockIP2() {
         ((index++))
     done
 
-    # 自动选择最优 IP
     local best_ip="${sorted_ips[0]}"
     echo
     echo "🌟 自动选择最优 IP: $best_ip (端口: ${ip_ports[$best_ip]}, 延迟: ${ip_latency[$best_ip]}ms)"
 
-    # 只输出纯 IP 列表，如果需要脚本调用
+    # 返回纯 IP 列表，便于脚本使用
     echo "${sorted_ips[@]}"
 }
 
