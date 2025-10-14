@@ -1739,7 +1739,7 @@ run_sb() {
 #  echo "$WORKDIR/bot $args"
 }
 getUnblockIP2() {
-    local hostname=$(hostname)
+     local hostname=$(hostname)
     local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
     local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
@@ -1752,7 +1752,8 @@ getUnblockIP2() {
         response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
         local ip=$(echo "$response" | awk -F "|" '{print $1}')
         local status=$(echo "$response" | awk -F "|" '{print $2}')
-        local ports=$(echo "$response" | grep -oP '\d{2,3}(?=])' | wc -l)
+        # POSIX grep 提取端口数量
+        local ports=$(echo "$response" | grep -o '[0-9]\{1,3\}' | wc -l)
 
         if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
             # 测试延迟
@@ -1770,7 +1771,7 @@ getUnblockIP2() {
         return
     fi
 
-    # 按分数排序，降序
+    # 按分数排序，降序输出
     for ip in "${!ip_scores[@]}"; do
         echo "$ip|${ip_scores[$ip]}"
     done | sort -t'|' -k2 -nr | awk -F'|' '{print $1}'
