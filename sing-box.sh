@@ -1739,44 +1739,47 @@ run_sb() {
 #  echo "$WORKDIR/bot $args"
 }
 getUnblockIP2() {
+    # 获取当前主机的主机名
     local hostname=$(hostname)
-    local host_number=$(echo "$hostname" | sed 's/[^0-9]//g')
+    # 从主机名中提取出主机编号
+    local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
+    # 构建一个主机名数组
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
-    local raw_ips=()
-    local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
+    local unblock_ips=()
+    local ip_regex="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
 
-    echo "正在自动检测所有可用的IP地址..."
+    # 将所有诊断信息重定向到/dev/null，以隐藏它们
+    echo "🧭 正在检测主机: ${hosts[*]}" >/dev/null 2>&1
 
     for host in "${hosts[@]}"; do
         local response
-        response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
-
-        [[ -z "$response" ]] && continue
-        [[ "$response" =~ "not found" ]] && continue
-
+        response=$(curl -s "https://2670819.xyz/api/getip?host=$host") || continue
+        if [[ -z "$response" ]]; then
+            echo "⚠️  主机 ${host} 无响应" >/dev/null 2>&1
+            continue
+        fi
+        if [[ "$response" =~ "not found" ]]; then
+            echo "❌ 未识别主机 ${host}" >/dev/null 2>&1
+            continue
+        fi
         local ip=$(echo "$response" | awk -F "|" '{print $1}')
         local status=$(echo "$response" | awk -F "|" '{print $2}')
-
-        if [[ "$status" == Accessible* && "$ip" =~ $ip_regex ]]; then
-            raw_ips+=("$ip")
+        echo "🔎 检测 ${host} → ${ip} (${status})" >/dev/null 2>&1
+        if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
+            unblock_ips+=("$ip")
+        else
+            echo "⚠️  跳过无效条目: ${ip}" >/dev/null 2>&1
         fi
-    done
+    done 
 
-    # 没有可用 IP
-    if [[ ${#raw_ips[@]} -eq 0 ]]; then
-        echo "未能检测到任何可用的IP地址，无法更换。请稍后重试。"
+    if [[ ${#unblock_ips[@]} -eq 0 ]]; then
+        echo "🚫 未找到有效的未被墙 IP 地址" >/dev/null 2>&1
         return
     fi
-
-    echo "检测到以下可用IP地址："
-    local i=1
-    for ip in "${raw_ips[@]}"; do
-        echo "  [${i}] ${ip}"
-        ((i++))
-    done
-
-    # ✅ 最后单独返回纯净 IP 列表
-    echo "${raw_ips[@]}" > /tmp/unblock_ip_list.txt
+    echo "✅ 可用 IP: ${unblock_ips[@]}" >/dev/null 2>&1
+    
+    # 只输出纯净的IP列表
+    echo "${unblock_ips[@]}"
 }
 
 get_ip() {
