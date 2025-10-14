@@ -1741,7 +1741,7 @@ run_sb() {
 
 getUnblockIP2() {
     local hostname=$(hostname)
-    local host_number=$(echo "$hostname" | grep -oP '\d+')
+    local host_number=$(echo "$hostname" | sed 's/[^0-9]//g')
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
     local unblock_ips=()
     local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
@@ -1764,7 +1764,6 @@ getUnblockIP2() {
         local status=$(echo "$response" | awk -F "|" '{print $2}')
         echo "🔎 检测 ${host} → ${ip} (${status})"
 
-        # ✅ 匹配 Accessible 开头的状态
         if [[ "$status" == Accessible* && "$ip" =~ $ip_regex ]]; then
             unblock_ips+=("$ip")
             echo "✅ 添加可用 IP: $ip"
@@ -1778,7 +1777,6 @@ getUnblockIP2() {
         return
     fi
 
-    # 输出纯净 IP 列表
     echo "${unblock_ips[@]}"
 }
 
