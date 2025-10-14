@@ -1766,7 +1766,7 @@ getUnblockIP2() {
         ip=$(echo "$response" | jq -r '.host' 2>/dev/null)
         status=$(echo "$response" | jq -r '.status' 2>/dev/null)
         # 直接獲取 accessible_ports 陣列，並用逗號連接
-        ports=$(echo "$response" | jq -r '.accessible_ports | join(",")' 2>/dev/null)
+        ports=$(echo "$response" | jq -r '.checked_ports | join(",")' 2>/dev/null)
 
         # 條件判斷：狀態必須是 Accessible，且 IP 和 ports 變數不能為空
         if [[ "$status" != "Accessible" || -z "$ip" || ! "$ip" =~ $ip_regex || -z "$ports" ]]; then
