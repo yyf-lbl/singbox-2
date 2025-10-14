@@ -1739,46 +1739,41 @@ run_sb() {
 #  echo "$WORKDIR/bot $args"
 }
 getUnblockIP2() {
-    # 获取当前主机的主机名
+    # 获取当前主机名
     local hostname=$(hostname)
-    # 从主机名中提取出主机编号
+    # 提取主机编号
     local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
-    # 构建一个主机名数组
+    # 构建要检测的主机数组
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
     local unblock_ips=()
-    local ip_regex="^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"
+    local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
 
-    # 将所有诊断信息重定向到/dev/null，以隐藏它们
-    echo "🧭 正在检测主机: ${hosts[*]}" >/dev/null 2>&1 
+    echo "🧭 正在检测主机: ${hosts[*]} ..." >/dev/null 2>&1
 
     for host in "${hosts[@]}"; do
         local response
         response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
         if [[ -z "$response" ]]; then
-            echo "⚠️  主机 ${host} 无响应" >/dev/null 2>&1
             continue
         fi
-        if [[ "$response" =~ "not found" ]]; then
-            echo "❌ 未识别主机 ${host}" >/dev/null 2>&1
-            continue
-        fi
-        local ip=$(echo "$response" | awk -F "|" '{print $1}')
-        local status=$(echo "$response" | awk -F "|" '{print $2}')
-        echo "🔎 检测 ${host} → ${ip} (${status})" >/dev/null 2>&1
+
+        # 使用 jq 解析 JSON
+        local ip
+        local status
+        ip=$(echo "$response" | jq -r '.host') >/dev/null 2>&1
+        status=$(echo "$response" | jq -r '.status') >/dev/null 2>&1
+
         if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
             unblock_ips+=("$ip")
-        else
-            echo "⚠️  跳过无效条目: ${ip}" >/dev/null 2>&1
         fi
-    done 
+    done
 
     if [[ ${#unblock_ips[@]} -eq 0 ]]; then
         echo "🚫 未找到有效的未被墙 IP 地址" >/dev/null 2>&1
         return
     fi
-    echo "✅ 可用 IP: ${unblock_ips[@]}" >/dev/null 2>&1
-    
-    # 只输出纯净的IP列表
+
+    # 只输出可用 IP
     echo "${unblock_ips[@]}"
 }
 
