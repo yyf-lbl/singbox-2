@@ -1739,58 +1739,42 @@ run_sb() {
 #  echo "$WORKDIR/bot $args"
 }
 getUnblockIP2() {
-  # --- 内部变量定义 ---
-    local hostname host_number hosts ip_regex results host response ip status ports
-    local ping_time sorted line
+    # 获取当前主机名
+    local hostname=$(hostname)
+    # 提取主机编号
+    local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
+    # 构建要检测的主机数组
+    local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
+    local unblock_ips=()
+    local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
 
-    # --- 初始化 ---
-    hostname=$(hostname)
-    host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}' | grep '^[0-9]\+$' || echo "0")
-    hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
-    ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
-    results=()
+    echo "🧭 正在检测主机: ${hosts[*]} ..." >/dev/null 2>&1
 
-    # --- 进度提示 (输出到 stderr) ---
-    echo "🧭 正在自动检测所有可用的IP地址..." >&2
-
-    # --- 循环检测 ---
     for host in "${hosts[@]}"; do
-        response=$(curl --connect-timeout 5 -s "https://2670819.xyz/api.php?host=$host&mode=all")
-        if [[ $? -ne 0 || -z "$response" ]]; then
+        local response
+        response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
+        if [[ -z "$response" ]]; then
             continue
         fi
 
-        ip=$(echo "$response" | jq -r '.host' 2>/dev/null)
-        status=$(echo "$response" | jq -r '.status' 2>/dev/null)
-        ports=$(echo "$response" | jq -r '.accessible_ports // .checked_ports | join(",")' 2>/dev/null)
+        # 使用 jq 解析 JSON
+        local ip
+        local status
+        ip=$(echo "$response" | jq -r '.host') >/dev/null 2>&1
+        status=$(echo "$response" | jq -r '.status') >/dev/null 2>&1
 
-        if [[ "$status" != "Accessible" || -z "$ip" || ! "$ip" =~ $ip_regex || -z "$ports" ]]; then
-            continue
+        if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
+            unblock_ips+=("$ip")
         fi
-
-        ping_time=$(ping -c 3 -n -q "$ip" 2>/dev/null | awk -F'/' '/^rtt/ {print $5}')
-        [[ -z "$ping_time" ]] && ping_time=999
-
-        results+=("$ip|$ports|$ping_time")
     done
 
-    # --- 结果处理 ---
-    if [[ ${#results[@]} -eq 0 ]]; then
-        echo "🚫 未找到任何可用的 IP 地址。" >&2
-        return 1
+    if [[ ${#unblock_ips[@]} -eq 0 ]]; then
+        echo "🚫 未找到有效的未被墙 IP 地址" >/dev/null 2>&1
+        return
     fi
 
-    # --- 格式化输出 ---
-    # 【已修改】将提示信息输出到 stderr
-    echo "检测到以下可用IP地址：" >&2
-    
-    # 【已修改】使用更健壮的排序和格式化逻辑
-    # 1. 将 results 数组内容通过管道传给 sort
-    # 2. sort 的结果再通过管道传给 while read 循环进行处理
-    printf '%s\n' "${results[@]}" | sort -t'|' -k3,3n | while IFS='|' read -r ip ports ping; do
-        # 在循环内部直接格式化输出，不再需要中间的 sorted 数组
-        printf "%s | 端口: [%s] | 延迟: %.0fms\n" "$ip" "$ports" "$ping"
-    done
+    # 只输出可用 IP
+    echo "${unblock_ips[@]}"
 }
 get_ip() {
     # 确保颜色变量可用
