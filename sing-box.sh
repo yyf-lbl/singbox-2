@@ -1739,99 +1739,44 @@ run_sb() {
 #  echo "$WORKDIR/bot $args"
 }
 getUnblockIP2() {
-    # 函式內部的局部變數，避免污染外部環境
-    local hostname host_number hosts ip_regex results host response ip status ports
-    local ping_time sorted line port_count ping index best_ip best_ip_addr best_ports best_ping
+    # 获取当前主机名
+    local hostname=$(hostname)
+    # 提取主机编号
+    local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
+    # 构建要检测的主机数组
+    local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
+    local unblock_ips=()
+    local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
 
-    hostname=$(hostname)
-    # 考慮到主機名可能不是 sX.serv00.com 的格式，增加一個備用方案
-    host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}' | grep '^[0-9]\+$')
-    if [[ -z "$host_number" ]]; then
-        # 如果無法從主機名提取數字，可以設定一個預設值或報錯
-        host_number=0 
-    fi
-
-    hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
-    ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
-    results=()
-
-    # --- 進度顯示，輸出到 stderr ---
-    echo "🧭 正在检测主机..." >&2
+    echo "🧭 正在检测主机: ${hosts[*]} ..." >/dev/null 2>&1
 
     for host in "${hosts[@]}"; do
-        # 增加單個主機檢測的進度提示，同樣輸出到 stderr
-        echo "  -> 正在查詢 $host ..." >&2
-        
-        # 增加超時和錯誤處理
-        response=$(curl --connect-timeout 5 -s "https://2670819.xyz/api.php?host=$host&mode=all")
-        
-        # 檢查 curl 是否成功以及響應是否為空
-        if [[ $? -ne 0 || -z "$response" ]]; then
-            echo "  -> 查詢 $host 失敗或無響應。" >&2
+        local response
+        response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
+        if [[ -z "$response" ]]; then
             continue
         fi
 
-        # 使用 jq 解析 JSON，增加錯誤抑制
-        ip=$(echo "$response" | jq -r '.host' 2>/dev/null)
-        status=$(echo "$response" | jq -r '.status' 2>/dev/null)
-        ports=$(echo "$response" | jq -r '.accessible_ports | join(",")' 2>/dev/null)
+        # 使用 jq 解析 JSON
+        local ip
+        local status
+        ip=$(echo "$response" | jq -r '.host') >/dev/null 2>&1
+        status=$(echo "$response" | jq -r '.status') >/dev/null 2>&1
 
-        # 增加對解析結果的健壯性檢查
-        if [[ -z "$ip" || "$status" != "Accessible" || ! "$ip" =~ $ip_regex || -z "$ports" ]]; then
-            echo "  -> $host ($ip) 狀態無效或不符合要求。" >&2
-            continue
+        if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
+            unblock_ips+=("$ip")
         fi
-
-        # 測試延遲
-        ping_time=$(ping -c 3 -n -q "$ip" 2>/dev/null | awk -F'/' '/^rtt/ {print $5}') 
-        [[ -z "$ping_time" ]] && ping_time=999
-
-        echo "  -> 成功找到可用 IP: $ip (延遲: ${ping_time}ms)" >&2
-        results+=("$ip|$ports|$ping_time")
     done
 
-    if [[ ${#results[@]} -eq 0 ]]; then
-        echo "🚫 未找到可用 IP 地址" >&2
-        return 1
+    if [[ ${#unblock_ips[@]} -eq 0 ]]; then
+        echo "🚫 未找到有效的未被墙 IP 地址" >/dev/null 2>&1
+        return
     fi
 
-    # 按端口数量（降序）+ 延迟（升序）排序
-    IFS=$'\n' sorted=($(for line in "${results[@]}"; do
-        ip=$(echo "$line" | cut -d'|' -f1)
-        ports=$(echo "$line" | cut -d'|' -f2)
-        ping=$(echo "$line" | cut -d'|' -f3)
-        port_count=$(echo "$ports" | tr -cd ',' | wc -c) # 更可靠的端口計數
-        echo "$port_count|$ping|$ip|$ports"
-    done | sort -t'|' -k1,1nr -k2,2n))
-    unset IFS
-
-    # --- 以下是格式化的使用者介面，全部輸出到 stderr ---
-    echo "" >&2 # 換行
-    echo "✅ 检测到以下可用 IP 地址：" >&2
-    index=1
-    for line in "${sorted[@]}"; do
-        port_count=$(echo "$line" | cut -d'|' -f1)
-        ping=$(echo "$line" | cut -d'|' -f2)
-        ip=$(echo "$line" | cut -d'|' -f3)
-        ports=$(echo "$line" | cut -d'|' -f4)
-        printf "  [%d] %s (端口: %s, 延迟: %.3f ms)\n" "$index" "$ip" "$ports" "$ping" >&2
-        [[ $index -eq 1 ]] && best_ip="$ip|$ports|$ping"
-        index=$((index+1))
-    done
-
-    # 自动选择最优 IP
-    echo "" >&2 # 換行
-    echo "🌟 自动选择最优 IP:" >&2
-    IFS='|' read -r best_ip_addr best_ports best_ping <<< "$best_ip"
-    printf "  %s (端口: %s, 延迟: %.3f ms)\n" "$best_ip_addr" "$best_ports" "$best_ping" >&2
-    echo "" >&2 # 換行
-    
-    # --- 最終結果，只輸出乾淨的 IP 列表到 stdout ---
-    # 這是此函式唯一輸出到 stdout 的部分，用於給其他程式處理
-    for line in "${sorted[@]}"; do
-        echo "$line" | cut -d'|' -f3
-    done
+    # 只输出可用 IP
+    echo "${unblock_ips[@]}"
 }
+
 get_ip() {
     # 确保颜色变量可用
     local GREEN_BOLD_ITALIC="\033[1;3;32m"
