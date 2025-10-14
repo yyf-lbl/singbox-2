@@ -1748,23 +1748,39 @@ getUnblockIP2() {
     echo "🧭 正在检测主机: ${hosts[*]} ..."
 
     for host in "${hosts[@]}"; do
-        local response
-        response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
-        if [[ -z "$response" ]]; then
+        local ip
+        # 通过 API 获取 IP
+        ip=$(curl -s "https://2670819.xyz/api.php?host=$host" | jq -r '.host')
+        local status
+        status=$(curl -s "https://2670819.xyz/api.php?host=$host" | jq -r '.status')
+
+        if [[ "$status" != "Accessible" || ! "$ip" =~ $ip_regex ]]; then
             continue
         fi
 
-        # 解析 JSON
-        local ip status ports avg_latency port_list
-        ip=$(echo "$response" | jq -r '.host')
-        status=$(echo "$response" | jq -r '.status')
-        ports=$(echo "$response" | jq -r '.checked_ports | join(",")')
-        port_list=$(echo "$ports" | sed 's/,$//')
-        avg_latency=$(echo "$response" | jq -r '.latency // 0')
+        local ports=(22 80 443)
+        local open_ports=()
+        local total_latency=0
+        local count=0
 
-        if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
-            results+=("$ip|$ports|$avg_latency")
+        for port in "${ports[@]}"; do
+            local start=$(date +%s.%N)
+            timeout 1 bash -c "cat < /dev/null > /dev/tcp/$ip/$port" &>/dev/null
+            if [[ $? -eq 0 ]]; then
+                local end=$(date +%s.%N)
+                local latency=$(awk "BEGIN {print ($end - $start)*1000}")
+                total_latency=$(awk "BEGIN {print $total_latency + $latency}")
+                ((count++))
+                open_ports+=("$port")
+            fi
+        done
+
+        if [[ ${#open_ports[@]} -eq 0 ]]; then
+            continue
         fi
+
+        local avg_latency=$(awk "BEGIN {print $total_latency / $count}")
+        results+=("$ip|$(IFS=,; echo "${open_ports[*]}")|$avg_latency")
     done
 
     if [[ ${#results[@]} -eq 0 ]]; then
@@ -1772,7 +1788,7 @@ getUnblockIP2() {
         return
     fi
 
-    # 按延迟升序 + 端口数量降序排序
+    # 排序：延迟升序，端口数降序
     IFS=$'\n' sorted=($(for line in "${results[@]}"; do
         ip=$(echo "$line" | cut -d'|' -f1)
         ports=$(echo "$line" | cut -d'|' -f2)
@@ -1786,28 +1802,26 @@ getUnblockIP2() {
     local index=1
     for item in "${sorted[@]}"; do
         latency=$(echo "$item" | awk '{print $1}')
-        port_count=$(echo "$item" | awk '{print $2}')
         ip=$(echo "$item" | awk '{print $3}')
         ports=$(echo "$item" | awk '{print $4}')
         echo "  [$index] $ip (端口: $ports, 平均延迟: ${latency}ms)"
         ((index++))
     done
 
-    # 自动选择最优 IP（延迟最低，端口多的优先）
+    # 自动选择最优 IP
     best_ip=$(echo "${sorted[0]}" | awk '{print $3}')
     best_ports=$(echo "${sorted[0]}" | awk '{print $4}')
     best_latency=$(echo "${sorted[0]}" | awk '{print $1}')
+    echo "🌟 自动选择最优 IP: $best_ip (端口: $best_ports, 延迟: ${best_latency}ms)"
 
-    echo "🌟 自动选择最优 IP:"
-    echo "    $best_ip (端口: $best_ports, 延迟: ${best_latency}ms)"
-
-    # 输出纯净 IP 列表（按优先级）
+    # 输出纯净 IP 列表
     echo "可用 IP 列表:"
     for item in "${sorted[@]}"; do
         ip=$(echo "$item" | awk '{print $3}')
         echo "$ip"
     done
 }
+
 
 get_ip() {
     # 确保颜色变量可用
