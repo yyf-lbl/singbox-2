@@ -1742,7 +1742,7 @@ getUnblockIP2() {
      local hostname=$(hostname)
     local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
-    local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
+    local unblock_ips=()
     declare -A ip_scores
 
     echo "🧭 正在检测所有可用 IP..." 
@@ -1750,17 +1750,14 @@ getUnblockIP2() {
     for host in "${hosts[@]}"; do
         local response
         response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
-        local ip=$(echo "$response" | awk -F "|" '{print $1}')
+        local ip=$(echo "$response" | awk -F "|" '{print $1}' | awk -F' ' '{print $1}')
         local status=$(echo "$response" | awk -F "|" '{print $2}')
-        # POSIX grep 提取端口数量
-        local ports=$(echo "$response" | grep -o '[0-9]\{1,3\}' | wc -l)
-
-        if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
-            # 测试延迟
+        local ports=$(echo "$response" | awk -F'[][]' '{print $2}' | awk -F',' '{print NF}')
+        
+        if [[ "$status" == "Accessible" && "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             local ping_ms
-            ping_ms=$(ping -c 3 -W 1 "$ip" | tail -1 | awk -F '/' '{print $5}') # 平均延迟
-            ping_ms=${ping_ms:-1000} # 如果ping失败，给一个很高的值
-            # 评分：端口数量 * 1000 - 延迟
+            ping_ms=$(ping -c 3 -W 1 "$ip" | tail -1 | awk -F '/' '{print $5}')
+            ping_ms=${ping_ms:-1000} # ping 失败就设高值
             local score=$((ports * 1000 - ping_ms))
             ip_scores["$ip"]=$score
         fi
@@ -1771,7 +1768,7 @@ getUnblockIP2() {
         return
     fi
 
-    # 按分数排序，降序输出
+    # 按分数排序输出，降序
     for ip in "${!ip_scores[@]}"; do
         echo "$ip|${ip_scores[$ip]}"
     done | sort -t'|' -k2 -nr | awk -F'|' '{print $1}'
