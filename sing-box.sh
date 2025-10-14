@@ -1739,44 +1739,70 @@ run_sb() {
 #  echo "$WORKDIR/bot $args"
 }
 getUnblockIP2() {
-    # 获取当前主机名
-    local hostname=$(hostname)
-    # 提取主机编号
-    local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
-    # 构建要检测的主机数组
-    local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
-    local unblock_ips=()
-    local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
+    # --- 內部變數定義 ---
+    local hostname host_number hosts ip_regex results host response ip status ports
+    local ping_time sorted line
 
-    echo "🧭 正在检测主机: ${hosts[*]} ..." >/dev/null 2>&1
+    # --- 初始化 ---
+    hostname=$(hostname)
+    host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}' | grep '^[0-9]\+$' || echo "0")
+    hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
+    ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
+    results=()
 
+    # --- 進度提示 (輸出到 stderr，不影響最終結果) ---
+    echo "🧭 正在自动检测所有可用的IP地址..." >&2
+
+    # --- 迴圈檢測 ---
     for host in "${hosts[@]}"; do
-        local response
-        response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
-        if [[ -z "$response" ]]; then
+        # 請求 API，這次我們需要 all 模式來獲取所有端口信息
+        response=$(curl --connect-timeout 5 -s "https://2670819.xyz/api.php?host=$host&mode=all")
+        
+        if [[ $? -ne 0 || -z "$response" ]]; then
             continue
         fi
 
-        # 使用 jq 解析 JSON
-        local ip
-        local status
-        ip=$(echo "$response" | jq -r '.host') >/dev/null 2>&1
-        status=$(echo "$response" | jq -r '.status') >/dev/null 2>&1
+        # 使用 jq 解析所有需要的數據
+        ip=$(echo "$response" | jq -r '.host' 2>/dev/null)
+        status=$(echo "$response" | jq -r '.status' 2>/dev/null)
+        # 直接獲取 accessible_ports 陣列，並用逗號連接
+        ports=$(echo "$response" | jq -r '.accessible_ports | join(",")' 2>/dev/null)
 
-        if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
-            unblock_ips+=("$ip")
+        # 條件判斷：狀態必須是 Accessible，且 IP 和 ports 變數不能為空
+        if [[ "$status" != "Accessible" || -z "$ip" || ! "$ip" =~ $ip_regex || -z "$ports" ]]; then
+            continue
         fi
+
+        # 測試延遲 (ping)
+        ping_time=$(ping -c 3 -n -q "$ip" 2>/dev/null | awk -F'/' '/^rtt/ {print $5}') 
+        # 如果 ping 失敗，給一個很大的預設值，以便排序時排在後面
+        [[ -z "$ping_time" ]] && ping_time=999
+
+        # 將所有數據用 | 分隔，存入 results 陣列
+        results+=("$ip|$ports|$ping_time")
     done
 
-    if [[ ${#unblock_ips[@]} -eq 0 ]]; then
-        echo "🚫 未找到有效的未被墙 IP 地址" >/dev/null 2>&1
-        return
+    # --- 結果處理 ---
+    if [[ ${#results[@]} -eq 0 ]]; then
+        echo "🚫 未找到任何可用的 IP 地址。" >&2
+        return 1 # 返回錯誤碼
     fi
 
-    # 只输出可用 IP
-    echo "${unblock_ips[@]}"
-}
+    # 按延遲（第三個欄位）進行數字升序排序
+    IFS=$'\n' sorted=($(sort -t'|' -k3,3n <<<"${results[*]}"))
+    unset IFS
 
+    # --- 格式化輸出 ---
+    echo "检测到以下可用IP地址："
+    for line in "${sorted[@]}"; do
+        # 使用 IFS 和 read 將一行數據分割到三個變數中
+        IFS='|' read -r ip ports ping <<< "$line"
+        
+        # 使用 printf 進行精確的格式化輸出
+        # %.0f 會將 ping 的小數點去掉，如果需要小數點，可以用 %.2f
+        printf "%s | 端口: [%s] | 延迟: %.0fms\n" "$ip" "$ports" "$ping"
+    done
+}
 get_ip() {
     # 确保颜色变量可用
     local GREEN_BOLD_ITALIC="\033[1;3;32m"
