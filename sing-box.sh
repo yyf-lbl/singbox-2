@@ -1739,35 +1739,34 @@ run_sb() {
 #  echo "$WORKDIR/bot $args"
 }
 getUnblockIP2() {
-    # 获取当前主机名
     local hostname=$(hostname)
-    # 提取主机编号
     local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
-    # 构建要检测的主机数组
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
     local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
-    declare -A ip_scores  # key=IP, value=综合评分（端口数*1000-延迟ms）
+    declare -A ip_scores
+    declare -A ip_ports
+    declare -A ip_latency
 
     echo "🧭 正在检测主机: ${hosts[*]} ..." >/dev/null 2>&1
 
     for host in "${hosts[@]}"; do
-        local response ip status ports ping_ms score
+        local response ip status ports ping_ms score port_list
         response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
         [[ -z "$response" ]] && continue
 
-        # 使用 jq 解析 JSON
         ip=$(echo "$response" | jq -r '.host') >/dev/null 2>&1
         status=$(echo "$response" | jq -r '.status') >/dev/null 2>&1
+        port_list=$(echo "$response" | jq -r '.checked_ports | join(",")') >/dev/null 2>&1
         ports=$(echo "$response" | jq -r '.checked_ports | length') >/dev/null 2>&1
 
         if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
-            # 测试延迟（ping 3 次取平均值）
             ping_ms=$(ping -c 3 -W 1 "$ip" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
-            ping_ms=${ping_ms:-1000} # ping 失败就给一个高延迟值
+            ping_ms=${ping_ms:-1000}
 
-            # 评分 = 端口数量*1000 - 平均延迟(ms)
             score=$((ports * 1000 - ping_ms))
             ip_scores["$ip"]=$score
+            ip_ports["$ip"]=$port_list
+            ip_latency["$ip"]=$ping_ms
         fi
     done
 
@@ -1776,12 +1775,11 @@ getUnblockIP2() {
         return
     fi
 
-    # 按综合评分降序排序，输出纯 IP 列表
+    echo "检测到以下可用IP地址及端口/延迟信息："
     for ip in "${!ip_scores[@]}"; do
-        echo "$ip|${ip_scores[$ip]}"
-    done | sort -t'|' -k2 -nr | awk -F'|' '{print $1}'
+        echo "$ip | 端口: [${ip_ports[$ip]}] | 延迟: ${ip_latency[$ip]}ms"
+    done | sort -t':' -k3 -n
 }
-
 
 get_ip() {
     # 确保颜色变量可用
