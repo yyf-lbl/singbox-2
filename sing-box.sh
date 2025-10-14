@@ -1742,7 +1742,7 @@ getUnblockIP2() {
     local hostname=$(hostname)
     local host_number=$(echo "$hostname" | sed 's/[^0-9]//g')
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
-    local unblock_ips=()
+    local raw_ips=()
     local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
 
     echo "正在自动检测所有可用的IP地址..."
@@ -1750,33 +1750,33 @@ getUnblockIP2() {
     for host in "${hosts[@]}"; do
         local response
         response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
-        if [[ -z "$response" ]]; then
-            continue
-        fi
-        if [[ "$response" =~ "not found" ]]; then
-            continue
-        fi
+
+        [[ -z "$response" ]] && continue
+        [[ "$response" =~ "not found" ]] && continue
 
         local ip=$(echo "$response" | awk -F "|" '{print $1}')
         local status=$(echo "$response" | awk -F "|" '{print $2}')
 
-        # 匹配 Accessible 开头（兼容 "Accessible (port 22)" 等）
         if [[ "$status" == Accessible* && "$ip" =~ $ip_regex ]]; then
-            unblock_ips+=("$ip")
+            raw_ips+=("$ip")
         fi
     done
 
-    if [[ ${#unblock_ips[@]} -eq 0 ]]; then
+    # 没有可用 IP
+    if [[ ${#raw_ips[@]} -eq 0 ]]; then
         echo "未能检测到任何可用的IP地址，无法更换。请稍后重试。"
         return
     fi
 
     echo "检测到以下可用IP地址："
     local i=1
-    for ip in "${unblock_ips[@]}"; do
+    for ip in "${raw_ips[@]}"; do
         echo "  [${i}] ${ip}"
         ((i++))
     done
+
+    # ✅ 最后单独返回纯净 IP 列表
+    echo "${raw_ips[@]}" > /tmp/unblock_ip_list.txt
 }
 
 get_ip() {
