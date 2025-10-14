@@ -1722,49 +1722,37 @@ run_sb() {
 #  echo "$WORKDIR/bot $args"
 }
 
-getUnblockIP2() {
-    # 获取当前主机的主机名
-    local hostname=$(hostname)
-    # 从主机名中提取出主机编号（即主机名的数字部分）
-    local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
-    
-    # 构建一个主机名数组，包含 cache、web 和当前主机
-    local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
 
-    # 定义一个数组，用于存储所有未被墙的IP
+getUnblockIP2() {
+    local hostname=$(hostname)
+    local host_number=$(echo "$hostname" | grep -oP '\d+')
+    local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
     local unblock_ips=()
 
-    # 遍历主机名称数组
     for host in "${hosts[@]}"; do
-        # 使用curl命令调用API，获取主机的IP和状态信息
         local response=$(curl -s "https://ss.botai.us.kg/api/getip?host=$host")
-
-        # 检查API返回的响应中是否包含 "not found" 字符串，表示无法识别该主机
         if [[ "$response" =~ "not found" ]]; then
-            echo "未识别主机${host}, 请联系作者饭奇骏!"
-            return  # 退出函数
+            echo "未识别主机 ${host}, 请联系作者!"
+            continue
         fi
-        
-        # 从API返回的数据中提取出IP地址和状态信息
-        local ip=$(echo "$response" | awk -F "|" '{print $1 }')
-        local status=$(echo "$response" | awk -F "|" '{print $2 }')
 
-        # 将 "Accessible" 状态替换为 "未被墙"，"Blocked" 状态替换为 "已被墙"
-        if [[ "$status" == "Accessible" ]]; then
-            # 如果主机未被墙，将IP添加到 unblock_ips 数组中
+        local ip=$(echo "$response" | awk -F "|" '{print $1}')
+        local status=$(echo "$response" | awk -F "|" '{print $2}')
+
+        # 修正匹配 Accessible 开头的情况
+        if [[ "$status" == Accessible* ]]; then
             unblock_ips+=("$ip")
         fi
-    done 
+    done
 
-    # 如果没有找到任何未被墙的 IP 地址，直接退出函数
     if [[ ${#unblock_ips[@]} -eq 0 ]]; then
         echo "未找到有效的未被墙 IP 地址，返回并退出函数"
-        return  # 退出函数
+        return
     fi
 
-    # 返回未被墙的 IP 地址列表
     echo "${unblock_ips[@]}"
 }
+
 
 get_ip() {
     # 提示用户选择方式: 输入 y 启用备用 IP，回车自动检测主机地址，或手动输入 IP
