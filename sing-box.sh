@@ -32,11 +32,8 @@ mkdir -p $HOME/.beifile
 export CFIP=${CFIP:-'www.visa.com.tw'}
 export CFPORT=${CFPORT:-'443'}
 base_dir="$HOME/.beifile"
-password_file="$HOME/.beifile/.panel_password"
-log_file="$base_dir/wget_log.txt"
 ip_file="$base_dir/saved_ip.txt"
 ip1_file="$base_dir/saved_ip1.txt"
-cookies_file="$base_dir/cookies.txt"
 saved_ip=$(cat "$base_dir/.serv00_ip" 2>/dev/null)
 ip_address=""
 FINAL_IP=""
@@ -98,140 +95,23 @@ getUnblockIP() {
   return 0
 }
 # 定义函数来检查密码是否存在
-get_password() {
-    # 如果密码文件存在，读取密码
-    if [[ -f "$password_file" ]]; then
-        password=$(cat "$password_file")
-        [[ -z "$password" ]] && unset password
-    fi
-
-    if [[ -z "$password" ]]; then
-        # 如果密码文件不存在或内容为空，提示用户输入密码并保存
-        echo -ne "\033[1;3;33m请输入登录panel面板的密码(填不填谁便你,直接按Enter键): \033[0m"  # 黄色斜体加粗，不换行
-        read -r password  # 不隐藏输入
-        # 将密码保存到文件中
-        echo "$password" > "$password_file"
-        chmod 600 "$password_file"  # 确保只有用户自己能读写这个文件
-    fi
-}
-
-# 动态设置 login_url，基于当前服务器的 panel 号
-get_login_url() {
-    # 直接设置面板地址
-    login_url="https://panel.ct8.pl/login/"
-    target_url="https://panel.ct8.pl/ssl/www"
-
-    echo -e "\033[1;3;33m当前登录 URL: ${login_url}\033[0m"  # 调试输出
-}
-
-# 定义主函数
-process_ct8() {
-   
-    # 确保 base_dir 目录存在
-    if [[ ! -d "$base_dir" ]]; then
-        mkdir -p "$base_dir"
-    fi
-
-    # 检查是否已有保存的 IP 地址
-    if [[ -f "$ip_file" && -s "$ip_file" ]]; then
-        ip_address=$(cat "$ip_file")
-        echo -e "${GREEN_BOLD_ITALIC}当前服务器备用 IP 地址: ${ip_address}${RESET}"
-        return  # 已有 IP 地址则直接返回
-    fi
-
-    # 自动获取当前用户名
-    username=$(whoami)
-
-    # 获取登录 URL
-    get_login_url
-
-    # 获取密码
-    get_password
-
-    # 登录循环，直到登录成功或用户选择不再尝试
-    while true; do
-        # 执行登录请求并记录日志，错误输出重定向到文件
-        wget -S --save-cookies "$cookies_file" --keep-session-cookies --post-data "username=$username&password=$password" "$login_url" -O /dev/null 2> "$log_file"
-        
-        # 检查是否登录成功
-        if grep -q "HTTP/.* 200 OK" "$log_file" || grep -q "HTTP/.* 302 Found" "$log_file"; then
-            # 如果成功，进行后续操作
-            wget -S --load-cookies "$cookies_file" -O /dev/null "$target_url" 2>> "$log_file"
-            
-            # 提取 IP 地址并保存
-            ip_address=$(awk '/\.\.\./ {getline; print}' "$log_file" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq | head -n 1)
-            
-            if [[ -n "$ip_address" ]]; then
-                echo -e "${GREEN_BOLD_ITALIC}服务器备用 IP 地址: ${ip_address}${RESET}"
-                echo "$ip_address" > "$ip_file"
-                break
-            else
-                echo "没有提取到 IP 地址"
-                rm -f "$cookies_file"
-                return
-            fi
-        else
-            if [[ "$login_url" == *"ct8.pl"* ]]; then
-                # 仅在 ct8.pl 时，不显示任何错误信息，只尝试提取 IP
-                # 提取 IP 地址并保存
-                ip_address=$(awk '/\.\.\./ {getline; print}' "$log_file" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq | head -n 1)
-                
-                if [[ -n "$ip_address" ]]; then
-                    echo -e "${GREEN_BOLD_ITALIC}服务器备用 IP 地址: ${ip_address}${RESET}"
-                    echo "$ip_address" > "$ip_file"
-                else
-                    echo "没有提取到 IP 地址"
-                fi
-                return
-            else
-                # 显示错误信息并提示是否重新登录
-                echo -e "${RED_BOLD_ITALIC}登录失败，请检查用户名或密码！${RESET}"
-                echo "登录失败，保留日志文件和其他数据进行调试"
-
-                # 提示用户是否重新尝试登录
-                echo -n -e "\033[1;3;33m是否重新登录？（y/n）:\033[0m"
-                read -r choice
-                if [[ "$choice" =~ ^[Nn]$ ]]; then
-                    exit 1
-                else
-                    get_login_url
-                    get_password
-                fi
-            fi
-        fi
-    done
-}
 
 # 备用ip获取函数
 beiyong_ip() {
-    # 检查是否已保存 IP 地址
     if [[ -f "$base_dir/.serv00_ip" ]]; then
         saveda_ip=$(cat "$base_dir/.serv00_ip")
-        echo -e "\033[1;32;3m当前服务器备用 IP 地址: $saveda_ip\033[0m"  # 绿色输出
+        echo -e "\033[1;32;3m当前服务器备用 IP 地址: $saveda_ip\033[0m"
         return
     fi
 
-    # 检查服务器类型
-    if [[ "$(hostname -d)" == "ct8.pl" ]]; then
-        echo -e "\033[1;33m检测到 ct8.pl 服务器，正在调用 process_ct8 函数...\033[0m"  # 黄色输出
-        process_ct8  # 调用 process_ct8 函数
-    else
-        # 获取 netstat -i 输出并提取以 mail 开头的 IP 地址
-        ip_addresses=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
+    # 直接尝试从 netstat 获取
+    ip_addresses=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
 
-        # 检查是否提取到 IP 地址
-        if [[ -z "$ip_addresses" ]]; then
-            echo -e "\033[1;31m没有找到备用 IP 地址，正在调用 process_ct8 函数...\033[0m"  # 红色输出
-            process_ct8  # 调用 process_ct8 函数
-        else
-            # 保存提取的 IP 地址到文件
-            echo "$ip_addresses" > "$base_dir/.serv00_ip" || {
-                echo -e "\033[1;31m无法写入 IP 地址文件！\033[0m"  # 红色输出
-                return 1
-            }
-            # 立即读取并输出保存的 IP 地址
-            echo -e "\033[1;32;3m当前服务器备用 IP 地址: $ip_addresses\033[0m"  # 绿色输出
-        fi
+    if [[ -z "$ip_addresses" ]]; then
+        echo -e "\033[1;31m未能自动获取备用 IP。\033[0m"
+    else
+        echo "$ip_addresses" > "$base_dir/.serv00_ip"
+        echo -e "\033[1;32;3m当前服务器备用 IP 地址: $ip_addresses\033[0m"
     fi
 }
 # 清理所有文件函数
@@ -323,64 +203,34 @@ cleanup_and_delete() {
 
 # 获取主机域名和ip地址
 get_server_info() {
-    # 颜色变量
     CYAN="\033[1;36m"
-    GREEN_BOLD_ITALIC="\033[1;3;32m"  # 绿色加粗斜体
-    YELLOW_BOLD_ITALIC="\033[1;3;33m" # 黄色加粗斜体
+    GREEN_BOLD_ITALIC="\033[1;3;32m"
+    YELLOW_BOLD_ITALIC="\033[1;3;33m"
     RESET="\033[0m"
 
-    # 获取当前用户名
     user=$(whoami)
+    # 直接固定为 serv00 域名
+    SERV_DOMAIN="$user.serv00.net"
 
-    # 根据面板选择设置 SERV_DOMAIN
-    if [[ "$panel_number" == "1" ]]; then
-        SERV_DOMAIN="$user.serv00.net"
-    else
-        SERV_DOMAIN="$user.ct8.pl"
-    fi
-
-    # 尝试获取 IPv4 地址，如果失败则尝试获取 IPv6 地址
     IP=$(curl -s https://api.ipify.org)
+    [[ -z "$IP" ]] && IP=$(curl -s ipv6.ip.sb)
 
-    if [[ -z "$IP" ]]; then
-        # 如果没有获取到 IPv4 地址，尝试获取 IPv6 地址
-        IP=$(curl -s https://api.ipify.org 3 ipv6.ip.sb)
-        if [[ -n "$IP" ]]; then
-            IP="[$IP]"  # 将 IPv6 地址用方括号包裹
-        else
-            echo -e "${CYAN}无法获取 IP 地址，请检查网络连接或 API 服务是否正常。${RESET}"
-            return 1  # 退出函数并返回错误状态
-        fi
-    fi
-
-    # 输出获取到的 IP 地址
     echo -e "${GREEN_BOLD_ITALIC}当前服务器的 IP 地址是：$IP${RESET}"
 
-    # 获取当前服务器的完整域名（FQDN）
     current_fqdn=$(hostname -f)
 
-    # 根据域名判断并输出相应的信息
     if [[ "$current_fqdn" == *.serv00.com ]]; then
         echo -e "${GREEN_BOLD_ITALIC}当前服务器主机地址是：$current_fqdn${RESET}"
         echo -e "${YELLOW_BOLD_ITALIC}本机域名是: $user.serv00.net${RESET}"
         
-        # 先尝试获取未被墙的 IP 地址
         if ! getUnblockIP; then
-            # 如果获取失败，调用备用 IP 函数
-            echo -e "${CYAN}未能获取未被墙的 IP 地址，尝试获取备用 IP 地址...${RESET}"
+            echo -e "${CYAN}未能获取 API IP，尝试获取本地备用 IP...${RESET}"
             beiyong_ip
         fi
-    elif [[ "$current_fqdn" == *.ct8.pl ]]; then
-        echo -e "${GREEN_BOLD_ITALIC}当前服务器主机地址是：$current_fqdn${RESET}"
-        echo -e "${YELLOW_BOLD_ITALIC}本机域名是: $user.ct8.pl${RESET}"
-        
-        # 调用 process_ct8 函数进行处理
-        process_ct8
     else
-        echo -e "${CYAN}当前域名不属于 serv00.com 或 ct8.pl 域。${RESET}"
+        echo -e "${CYAN}当前环境非 Serv00 标准节点，请检查。${RESET}"
     fi
 }
-
 
 # 检查sing-box运行
 check_singbox_installed() {
@@ -2252,7 +2102,7 @@ menu() {
      while true; do
         clear
    echo ""
-   magenta "=== 欢迎使用SERV00和CT8|SING-BOX一键安装脚本 ==="
+   magenta "=== 欢迎使用SERV00|SING-BOX一键安装脚本 ==="
    echo ""
     bold_italic_orange "\033[1;3m=== 脚本支持:VLESS VMESS HY2 TUIC socks5 协议，UUID 自动生成 ===\033[0m"
     magenta "=== 支持安装：单，双，三个协议(面板最多只能开放3个端口)，自由选择 ==="
