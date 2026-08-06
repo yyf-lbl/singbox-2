@@ -45,16 +45,16 @@ getUnblockIP() {
   # 获取当前主机的主机名
   local hostname=$(hostname)
   
-  # 从主机名中提取出主机编号（即主机名的数字部分）
+  # 从主机名中提取出主机编号
   local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
 
-  # 构建一个主机名数组，包含 cache、web 和当前主机
+  # 构建主机名数组
   local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
 
-  # 使用工作目录变量来定义存储未被墙IP的文件路径
+  # 定义存储文件
   local ip_file="$WORKDIR/unblock_ips.txt"
 
-  # 如果文件存在且不为空，直接读取文件中的IP
+  # 如果文件存在且不为空，直接读取
   if [[ -f "$ip_file" && -s "$ip_file" ]]; then
     while read -r ip; do
        echo -e "\033[32;3;1m当前服务器可用 ip 地址: $ip\033[0m" 
@@ -64,22 +64,20 @@ getUnblockIP() {
 
   local unblock_ips=()
 
-  # 遍历主机名称数组
+  # 遍历主机
   for host in "${hosts[@]}"; do
-    # 【核心修改点 1】：修改为你的 API 地址
-    # 注意：确保你的域名开启了 HTTPS，如果没开启，请把 https 改为 http
-    local response=$(curl -s --fail "http://2670819.xyz/api.php?host=$host")
+    # 修改为你的 API 地址
+    local response=$(curl -sk --fail "https://2670819.xyz/api.php?host=$host")
 
     if [ $? -ne 0 ]; then
-      echo "无法访问自定义 API ($host)，请检查后端 api.php 是否正常。"
-      continue # 改为 continue，尝试下一个主机
+      echo "无法访问自定义 API ($host)，尝试跳过..."
+      continue
     fi
 
-    # 【核心修改点 2】：解析 JSON 格式
-    # 由于你的 PHP 返回的是 {"host":"xxx","status":"Accessible"...}
-    # 我们使用 sed 来提取 host 和 status 的值
-    local ip=$(echo "$response" | sed -n 's/.*"host":\s*"\([^"]*\)".*/\1/p')
-    local status=$(echo "$response" | sed -n 's/.*"status":\s*"\([^"]*\)".*/\1/p')
+    # 【核心修改点 2】：适配 FreeBSD (Serv00) 的解析逻辑
+    # 使用 grep 抓取行，再用 cut 提取引号里的内容
+    local ip=$(echo "$response" | grep '"host"' | cut -d '"' -f 4)
+    local status=$(echo "$response" | grep '"status"' | cut -d '"' -f 4)
 
     # 判断状态
     if [[ "$status" == "Accessible" ]]; then
