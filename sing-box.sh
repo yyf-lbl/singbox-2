@@ -11,15 +11,13 @@ RED='\033[1;31m'
 BOLD_ITALIC='\033[1;3m'
 RESET='\033[0m'
 GREEN_BOLD_ITALIC="\033[1;3;32m"
-RESET="\033[0m"
 # Formatting functions
 bold_italic_red() { echo -e "${bold_red}\033[3m$1${reset}"; }
 bold_italic_green() { echo -e "${bold_green}\033[3m$1${reset}"; }
 bold_italic_yellow() { echo -e "${bold_yellow}\033[3m$1${reset}"; }
 bold_italic_purple() { echo -e "${bold_purple}\033[3m$1${reset}"; }
-RED_BOLD_ITALIC='\033[1;3;31m'  
-GREEN_BOLD_ITALIC='\033[1;3;32m'  
-RESET='\033[0m' 
+RED_BOLD_ITALIC='\033[1;3;31m'
+GREEN_BOLD_ITALIC='\033[1;3;32m'
 red() {
     local RED='\033[0;31m'      # 红色
     local BOLD='\033[1m'        # 加粗
@@ -34,11 +32,8 @@ mkdir -p $HOME/.beifile
 export CFIP=${CFIP:-'www.visa.com.tw'}
 export CFPORT=${CFPORT:-'443'}
 base_dir="$HOME/.beifile"
-password_file="$HOME/.beifile/.panel_password"
-log_file="$base_dir/wget_log.txt"
 ip_file="$base_dir/saved_ip.txt"
 ip1_file="$base_dir/saved_ip1.txt"
-cookies_file="$base_dir/cookies.txt"
 saved_ip=$(cat "$base_dir/.serv00_ip" 2>/dev/null)
 ip_address=""
 FINAL_IP=""
@@ -46,209 +41,77 @@ FINAL_IP=""
 getUnblockIP() {
   # 获取当前主机的主机名
   local hostname=$(hostname)
-  # 从主机名中提取出主机编号（即主机名的数字部分）
-  local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
   
-  # 构建一个主机名数组，包含 cache、web 和当前主机
+  # 从主机名中提取出主机编号
+  local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
+
+  # 构建主机名数组
   local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
 
-  # 使用工作目录变量来定义存储未被墙IP的文件路径
+  # 定义存储文件
   local ip_file="$WORKDIR/unblock_ips.txt"
 
-  # 如果文件存在且不为空，直接读取文件中的IP
+  # 如果文件存在且不为空，直接读取
   if [[ -f "$ip_file" && -s "$ip_file" ]]; then
-    # 读取文件中的IP并以绿色斜体加粗的样式输出
     while read -r ip; do
        echo -e "\033[32;3;1m当前服务器可用 ip 地址: $ip\033[0m" 
     done < "$ip_file"
-    return 0  # 读取到文件中已有IP后退出函数
+    return 0
   fi
 
-  # 定义一个数组，用于存储所有未被墙的IP
   local unblock_ips=()
 
-  # 遍历主机名称数组
+  # 遍历主机
   for host in "${hosts[@]}"; do
-    # 使用curl命令调用API，获取主机的IP和状态信息
-    local response=$(curl -s --fail "https://ss.botai.us.kg/api/getip?host=$host")
+    # 修改为你的 API 地址
+    local response=$(curl -sk --fail "https://2670819.xyz/api.php?host=$host")
 
-    # 如果curl失败，返回错误并退出函数
     if [ $? -ne 0 ]; then
-      echo "无法访问API或网络出现问题，请稍后重试。"
-      return 1  # 退出函数
+      echo "无法访问自定义 API ($host)，尝试跳过..."
+      continue
     fi
 
-    # 检查API返回的响应中是否包含 "not found" 字符串，表示无法识别该主机
-    if [[ "$response" =~ "not found" ]]; then
-      echo "未识别主机${host}, 请联系作者饭奇骏!"
-      return 1  # 退出函数
-    fi
-    
-    # 从API返回的数据中提取出IP地址和状态信息
-    local ip=$(echo "$response" | awk -F "|" '{print $1 }')
-    local status=$(echo "$response" | awk -F "|" '{print $2 }')
+    # 【核心修改点 2】：适配 FreeBSD (Serv00) 的解析逻辑
+    # 使用 grep 抓取行，再用 cut 提取引号里的内容
+    local ip=$(echo "$response" | grep '"host"' | cut -d '"' -f 4)
+    local status=$(echo "$response" | grep '"status"' | cut -d '"' -f 4)
 
-    # 将 "Accessible" 状态替换为 "未被墙"，"Blocked" 状态替换为 "已被墙"
+    # 判断状态
     if [[ "$status" == "Accessible" ]]; then
-      # 如果主机未被墙，将IP添加到 unblock_ips 数组中
       unblock_ips+=("$ip")
     fi
   done 
 
-  # 如果没有找到任何未被墙的IP，输出提示并退出函数
   if [ ${#unblock_ips[@]} -eq 0 ]; then
-    echo "没有找到任何可用的未被墙服务器IP。"
-    return 1  # 退出函数
+    echo "没有找到任何可用的未被墙服务器IP (通过 2670819.xyz 查询)。"
+    return 1
   else
-    # 输出所有未被墙的IP地址，并保存到文件中
     for ip in "${unblock_ips[@]}"; do
-      echo -e "\033[32;3;1m当前服务器可用 ip 地址: $ip\033[0m"   # 输出绿色斜体加粗的IP地址
-      # 将每个IP保存到文件中
+      echo -e "\033[32;3;1m当前服务器可用 ip 地址: $ip\033[0m"
       echo "$ip" >> "$ip_file"
     done
   fi
 
-  # 如果成功获取到 IP，则退出函数并继续执行其他流程
   return 0
 }
-
-
-  
 # 定义函数来检查密码是否存在
-get_password() {
-    # 如果密码文件存在，读取密码
-    if [[ -f "$password_file" ]]; then
-        password=$(cat "$password_file")
-        [[ -z "$password" ]] && unset password
-    fi
-
-    if [[ -z "$password" ]]; then
-        # 如果密码文件不存在或内容为空，提示用户输入密码并保存
-        echo -ne "\033[1;3;33m请输入登录panel面板的密码(填不填谁便你,直接按Enter键): \033[0m"  # 黄色斜体加粗，不换行
-        read -r password  # 不隐藏输入
-        # 将密码保存到文件中
-        echo "$password" > "$password_file"
-        chmod 600 "$password_file"  # 确保只有用户自己能读写这个文件
-    fi
-}
-
-# 动态设置 login_url，基于当前服务器的 panel 号
-get_login_url() {
-    # 直接设置面板地址
-    login_url="https://panel.ct8.pl/login/"
-    target_url="https://panel.ct8.pl/ssl/www"
-
-    echo -e "\033[1;3;33m当前登录 URL: ${login_url}\033[0m"  # 调试输出
-}
-
-# 定义主函数
-process_ct8() {
-   
-    # 确保 base_dir 目录存在
-    if [[ ! -d "$base_dir" ]]; then
-        mkdir -p "$base_dir"
-    fi
-
-    # 检查是否已有保存的 IP 地址
-    if [[ -f "$ip_file" && -s "$ip_file" ]]; then
-        ip_address=$(cat "$ip_file")
-        echo -e "${GREEN_BOLD_ITALIC}当前服务器备用 IP 地址: ${ip_address}${RESET}"
-        return  # 已有 IP 地址则直接返回
-    fi
-
-    # 自动获取当前用户名
-    username=$(whoami)
-
-    # 获取登录 URL
-    get_login_url
-
-    # 获取密码
-    get_password
-
-    # 登录循环，直到登录成功或用户选择不再尝试
-    while true; do
-        # 执行登录请求并记录日志，错误输出重定向到文件
-        wget -S --save-cookies "$cookies_file" --keep-session-cookies --post-data "username=$username&password=$password" "$login_url" -O /dev/null 2> "$log_file"
-        
-        # 检查是否登录成功
-        if grep -q "HTTP/.* 200 OK" "$log_file" || grep -q "HTTP/.* 302 Found" "$log_file"; then
-            # 如果成功，进行后续操作
-            wget -S --load-cookies "$cookies_file" -O /dev/null "$target_url" 2>> "$log_file"
-            
-            # 提取 IP 地址并保存
-            ip_address=$(awk '/\.\.\./ {getline; print}' "$log_file" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq | head -n 1)
-            
-            if [[ -n "$ip_address" ]]; then
-                echo -e "${GREEN_BOLD_ITALIC}服务器备用 IP 地址: ${ip_address}${RESET}"
-                echo "$ip_address" > "$ip_file"
-                break
-            else
-                echo "没有提取到 IP 地址"
-                rm -f "$cookies_file"
-                return
-            fi
-        else
-            if [[ "$login_url" == *"ct8.pl"* ]]; then
-                # 仅在 ct8.pl 时，不显示任何错误信息，只尝试提取 IP
-                # 提取 IP 地址并保存
-                ip_address=$(awk '/\.\.\./ {getline; print}' "$log_file" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq | head -n 1)
-                
-                if [[ -n "$ip_address" ]]; then
-                    echo -e "${GREEN_BOLD_ITALIC}服务器备用 IP 地址: ${ip_address}${RESET}"
-                    echo "$ip_address" > "$ip_file"
-                else
-                    echo "没有提取到 IP 地址"
-                fi
-                return
-            else
-                # 显示错误信息并提示是否重新登录
-                echo -e "${RED_BOLD_ITALIC}登录失败，请检查用户名或密码！${RESET}"
-                echo "登录失败，保留日志文件和其他数据进行调试"
-
-                # 提示用户是否重新尝试登录
-                echo -n -e "\033[1;3;33m是否重新登录？（y/n）:\033[0m"
-                read -r choice
-                if [[ "$choice" =~ ^[Nn]$ ]]; then
-                    exit 1
-                else
-                    get_login_url
-                    get_password
-                fi
-            fi
-        fi
-    done
-}
 
 # 备用ip获取函数
 beiyong_ip() {
-    # 检查是否已保存 IP 地址
     if [[ -f "$base_dir/.serv00_ip" ]]; then
         saveda_ip=$(cat "$base_dir/.serv00_ip")
-        echo -e "\033[1;32;3m当前服务器备用 IP 地址: $saveda_ip\033[0m"  # 绿色输出
+        echo -e "\033[1;32;3m当前服务器备用 IP 地址: $saveda_ip\033[0m"
         return
     fi
 
-    # 检查服务器类型
-    if [[ "$(hostname -d)" == "ct8.pl" ]]; then
-        echo -e "\033[1;33m检测到 ct8.pl 服务器，正在调用 process_ct8 函数...\033[0m"  # 黄色输出
-        process_ct8  # 调用 process_ct8 函数
-    else
-        # 获取 netstat -i 输出并提取以 mail 开头的 IP 地址
-        ip_addresses=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
+    # 直接尝试从 netstat 获取
+    ip_addresses=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
 
-        # 检查是否提取到 IP 地址
-        if [[ -z "$ip_addresses" ]]; then
-            echo -e "\033[1;31m没有找到备用 IP 地址，正在调用 process_ct8 函数...\033[0m"  # 红色输出
-            process_ct8  # 调用 process_ct8 函数
-        else
-            # 保存提取的 IP 地址到文件
-            echo "$ip_addresses" > "$base_dir/.serv00_ip" || {
-                echo -e "\033[1;31m无法写入 IP 地址文件！\033[0m"  # 红色输出
-                return 1
-            }
-            # 立即读取并输出保存的 IP 地址
-            echo -e "\033[1;32;3m当前服务器备用 IP 地址: $ip_addresses\033[0m"  # 绿色输出
-        fi
+    if [[ -z "$ip_addresses" ]]; then
+        echo -e "\033[1;31m未能自动获取备用 IP。\033[0m"
+    else
+        echo "$ip_addresses" > "$base_dir/.serv00_ip"
+        echo -e "\033[1;32;3m当前服务器备用 IP 地址: $ip_addresses\033[0m"
     fi
 }
 # 清理所有文件函数
@@ -290,12 +153,16 @@ cleanup_delete() {
 cleanup_and_delete() {
     local target_dir="$HOME"
     local exclude_dirs="backups"
+    
+    local RED_BOLD_ITALIC='\033[1;3;31m'
+    local YELLOW_BOLD_ITALIC='\033[1;3;33m'
+    local RESET='\033[0m'
 
     if [ -d "$target_dir" ]; then
         echo -n -e "\033[1;3;33m准备初始化系统，请稍后...\033[0m\n"
         sleep 2
 
-        read -p "$(echo -e "\033[1;3;33m您确定要还原系统吗？\033[0m\n\033[1;31;3m(警告:此操作将会删除系统所有文件!)\033[0m\n\033[1;3;33m(y/n Enter默认y): \033[0m")" confirmation
+        read -p "$(echo -e "\033[1;3;33m您确定要还原系统吗？\033[0m\n\033[1;31;3m(警告:此操作将会删除系统所有文件和进程!)\033[0m\n\033[1;3;33m(y/n Enter默认y): \033[0m")" confirmation
         confirmation=${confirmation:-y}
         sleep 2
         
@@ -305,16 +172,26 @@ cleanup_and_delete() {
         fi
 
         # 终止当前用户的所有进程
-        pkill -u $(whoami)
+        echo -e "${RED_BOLD_ITALIC}--> 正在终止所有用户进程...${RESET}"
+        pkill -u $(whoami) >/dev/null 2>&1
+        sleep 3
+
+        # 明确告知用户需要手动删除定时任务
+        echo -e "${YELLOW_BOLD_ITALIC}--> 重要提示: 所有用户进程已终止。${RESET}"
+       # echo -e "${YELLOW_BOLD_ITALIC}--> 请在初始化完成后，务必手动登录网页控制面板，清空所有 Cron Jobs。${RESET}"
+        sleep 3 
 
         # 删除除排除目录以外的所有内容
+        echo -e "${RED_BOLD_ITALIC}--> 正在删除用户主目录下的所有文件...${RESET}"
+          sleep 3 
+
         IFS=':' read -r -a exclude_array <<< "$exclude_dirs"
         find "$target_dir" -mindepth 1 -maxdepth 1 \( -name "${exclude_array[0]}" -o -name "${exclude_array[1]}" \) -prune -o -exec rm -rf {} +
 
-        # 检查删除是否成功
         local remaining_items=$(find "$target_dir" -mindepth 1 -maxdepth 1 | grep -v -e "${exclude_array[0]}" -e "${exclude_array[1]}")
         if [ -z "$remaining_items" ]; then
-            echo -n -e "\033[1;3;32m已成功初始化系统!\033[0m\n"
+            # 在最终的成功信息里再次提醒
+            echo -n -e "\033[1;3;32m已成功初始化系统! \033[0m\n"
             exit 0
         else
             echo "删除操作出现问题，请检查是否有权限问题或其他错误。"
@@ -323,66 +200,37 @@ cleanup_and_delete() {
         echo "目录 $target_dir 不存在。"
     fi
 }
+
 # 获取主机域名和ip地址
 get_server_info() {
-    # 颜色变量
     CYAN="\033[1;36m"
-    GREEN_BOLD_ITALIC="\033[1;3;32m"  # 绿色加粗斜体
-    YELLOW_BOLD_ITALIC="\033[1;3;33m" # 黄色加粗斜体
+    GREEN_BOLD_ITALIC="\033[1;3;32m"
+    YELLOW_BOLD_ITALIC="\033[1;3;33m"
     RESET="\033[0m"
 
-    # 获取当前用户名
     user=$(whoami)
+    # 直接固定为 serv00 域名
+    SERV_DOMAIN="$user.serv00.net"
 
-    # 根据面板选择设置 SERV_DOMAIN
-    if [[ "$panel_number" == "1" ]]; then
-        SERV_DOMAIN="$user.serv00.net"
-    else
-        SERV_DOMAIN="$user.ct8.pl"
-    fi
-
-    # 尝试获取 IPv4 地址，如果失败则尝试获取 IPv6 地址
     IP=$(curl -s https://api.ipify.org)
+    [[ -z "$IP" ]] && IP=$(curl -s ipv6.ip.sb)
 
-    if [[ -z "$IP" ]]; then
-        # 如果没有获取到 IPv4 地址，尝试获取 IPv6 地址
-        IP=$(curl -s https://api.ipify.org 3 ipv6.ip.sb)
-        if [[ -n "$IP" ]]; then
-            IP="[$IP]"  # 将 IPv6 地址用方括号包裹
-        else
-            echo -e "${CYAN}无法获取 IP 地址，请检查网络连接或 API 服务是否正常。${RESET}"
-            return 1  # 退出函数并返回错误状态
-        fi
-    fi
-
-    # 输出获取到的 IP 地址
     echo -e "${GREEN_BOLD_ITALIC}当前服务器的 IP 地址是：$IP${RESET}"
 
-    # 获取当前服务器的完整域名（FQDN）
     current_fqdn=$(hostname -f)
 
-    # 根据域名判断并输出相应的信息
     if [[ "$current_fqdn" == *.serv00.com ]]; then
         echo -e "${GREEN_BOLD_ITALIC}当前服务器主机地址是：$current_fqdn${RESET}"
         echo -e "${YELLOW_BOLD_ITALIC}本机域名是: $user.serv00.net${RESET}"
         
-        # 先尝试获取未被墙的 IP 地址
         if ! getUnblockIP; then
-            # 如果获取失败，调用备用 IP 函数
-            echo -e "${CYAN}未能获取未被墙的 IP 地址，尝试获取备用 IP 地址...${RESET}"
+            echo -e "${CYAN}未能获取 API IP，尝试获取本地备用 IP...${RESET}"
             beiyong_ip
         fi
-    elif [[ "$current_fqdn" == *.ct8.pl ]]; then
-        echo -e "${GREEN_BOLD_ITALIC}当前服务器主机地址是：$current_fqdn${RESET}"
-        echo -e "${YELLOW_BOLD_ITALIC}本机域名是: $user.ct8.pl${RESET}"
-        
-        # 调用 process_ct8 函数进行处理
-        process_ct8
     else
-        echo -e "${CYAN}当前域名不属于 serv00.com 或 ct8.pl 域。${RESET}"
+        echo -e "${CYAN}当前环境非 Serv00 标准节点，请检查。${RESET}"
     fi
 }
-
 
 # 检查sing-box运行
 check_singbox_installed() {
@@ -1244,6 +1092,7 @@ done
 echo ""
     download_singbox && wait
   echo ""  
+    get_ip # Make sure we have an IP before generating config
     generate_config
 
     if [ "$INSTALL_VLESS" = "true" ]; then
@@ -1263,8 +1112,6 @@ echo ""
     fi
 
     # 运行 sing-box
-   get_ip
-   generate_config
    run_sb && sleep 3
     get_links
     
@@ -1273,7 +1120,7 @@ echo ""
         echo -e "\e[33;1;3m隧道域名: ${ARGO_DOMAIN}\e[0m"
     fi
 
-    echo -e "$(bold_italic_purple "安装完成！")"
+    echo -e "$(bold_italic_purple "安装已完成！")"
 }
 
     
@@ -1374,6 +1221,7 @@ RESET="\033[0m"
  # 使用当前用户的主目录定义默认路径
 CERT_PATH="${HOME}/sbox/cert.pem"
 PRIVATE_KEY_PATH="${HOME}/sbox/private.key"
+
 # 配置文件生成函数
 generate_config() {
     # 生成现实密钥对
@@ -1391,8 +1239,8 @@ generate_config() {
         return 1
     fi
     
-    # 基于所选服务创建配置文件
-    cat > "$WORKDIR/config.json" <<EOF
+    # 基于所选服务创建配置文件模板
+    cat > "$WORKDIR/config.template.json" <<EOF
 {
   "log": {
     "disabled": false,
@@ -1428,7 +1276,7 @@ EOF
 
     # 如果选择，则附加VLESS配置
     if [ "$INSTALL_VLESS" = "true" ]; then
-        cat >> "$WORKDIR/config.json" <<EOF
+        cat >> "$WORKDIR/config.template.json" <<EOF
     {
       "tag": "vless-reality-version",
       "type": "vless",
@@ -1460,8 +1308,8 @@ EOF
 
     # Append VMESS configuration if selected
     if [ "$INSTALL_VMESS" = "true" ]; then
-        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.json"
-        cat >> "$WORKDIR/config.json" <<EOF
+        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.template.json"
+        cat >> "$WORKDIR/config.template.json" <<EOF
     {
       "tag": "vmess-ws-in",
       "type": "vmess",
@@ -1484,12 +1332,12 @@ EOF
 
     # Append Hysteria2 configuration if selected
     if [ "$INSTALL_HYSTERIA2" = "true" ]; then
-        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.json"
-        cat >> "$WORKDIR/config.json" <<EOF
+        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.template.json"
+        cat >> "$WORKDIR/config.template.json" <<EOF
     {
       "tag": "hysteria-in",
       "type": "hysteria2",
-      "listen": "$FINAL_IP",
+      "listen": "__IP_ADDRESS__",
       "listen_port": $hy2_port,
       "users": [
         {
@@ -1510,12 +1358,12 @@ EOF
 
     # Append TUIC configuration if selected
     if [ "$INSTALL_TUIC" = "true" ]; then
-        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.json"
-        cat >> "$WORKDIR/config.json" <<EOF
+        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.template.json"
+        cat >> "$WORKDIR/config.template.json" <<EOF
     {
       "tag": "tuic-in",
       "type": "tuic",
-      "listen": "$FINAL_IP",
+      "listen": "__IP_ADDRESS__",
       "listen_port": $tuic_port,
       "users": [
         {
@@ -1535,7 +1383,7 @@ EOF
     fi
 
     # 继续写入配置的其余部分
-    cat >> "$WORKDIR/config.json" <<EOF
+    cat >> "$WORKDIR/config.template.json" <<EOF
   ],
   "outbounds": [
     {
@@ -1586,13 +1434,6 @@ EOF
         "type": "remote",
         "format": "binary",
         "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-netflix.srs",
-        "update_interval": "1d"
-      },
-      {
-        "tag": "geosite-openai",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/openai.srs",
         "update_interval": "1d"
       }
     ],
@@ -1659,6 +1500,12 @@ EOF
   }
 }
 EOF
+    
+    # 从模板生成初始的配置文件，并保存当前IP状态
+    sed "s/__IP_ADDRESS__/${FINAL_IP}/g" "$WORKDIR/config.template.json" > "$WORKDIR/config.json"
+    echo "$FINAL_IP" > "$base_dir/current_active_ip.txt"
+    green "配置文件模板和初始配置文件已生成。"
+    green "当前活动IP ${FINAL_IP} 已被记录。"
 }
 
 
@@ -1720,136 +1567,104 @@ run_sb() {
    
   fi
 #  echo "$WORKDIR/bot $args"
-}
+} 
 
+#更换ip函数
 getUnblockIP2() {
-    # 获取当前主机的主机名
+    # 获取当前主机名
     local hostname=$(hostname)
-    # 从主机名中提取出主机编号（即主机名的数字部分）
+    # 提取主机编号
     local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
-    
-    # 构建一个主机名数组，包含 cache、web 和当前主机
+    # 构建要检测的主机数组
     local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
-
-    # 定义一个数组，用于存储所有未被墙的IP
     local unblock_ips=()
+    local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
 
-    # 遍历主机名称数组
+    # 循环检测
     for host in "${hosts[@]}"; do
-        # 使用curl命令调用API，获取主机的IP和状态信息
-        local response=$(curl -s "https://ss.botai.us.kg/api/getip?host=$host")
-
-        # 检查API返回的响应中是否包含 "not found" 字符串，表示无法识别该主机
-        if [[ "$response" =~ "not found" ]]; then
-            echo "未识别主机${host}, 请联系作者饭奇骏!"
-            return  # 退出函数
+        local response
+        # 使用你的新 API
+        response=$(curl -sk --fail "https://2670819.xyz/api.php?host=$host") || continue
+        if [[ -z "$response" ]]; then
+            continue
         fi
-        
-        # 从API返回的数据中提取出IP地址和状态信息
-        local ip=$(echo "$response" | awk -F "|" '{print $1 }')
-        local status=$(echo "$response" | awk -F "|" '{print $2 }')
 
-        # 将 "Accessible" 状态替换为 "未被墙"，"Blocked" 状态替换为 "已被墙"
-        if [[ "$status" == "Accessible" ]]; then
-            # 如果主机未被墙，将IP添加到 unblock_ips 数组中
+        # 【关键修改】：不再依赖 jq，使用 grep 和 cut 解析 JSON
+        local ip=$(echo "$response" | grep '"host"' | cut -d '"' -f 4)
+        local status=$(echo "$response" | grep '"status"' | cut -d '"' -f 4)
+
+        if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
             unblock_ips+=("$ip")
         fi
-    done 
+    done
 
-    # 如果没有找到任何未被墙的 IP 地址，直接退出函数
     if [[ ${#unblock_ips[@]} -eq 0 ]]; then
-        echo "未找到有效的未被墙 IP 地址，返回并退出函数"
-        return  # 退出函数
+        return
     fi
 
-    # 返回未被墙的 IP 地址列表
+    # 只输出可用 IP 列表供 get_ip 函数处理
     echo "${unblock_ips[@]}"
 }
-
 get_ip() {
-    # 提示用户选择方式: 输入 y 启用备用 IP，回车自动检测主机地址，或手动输入 IP
-    read -p "$(echo -e "${CYAN}\033[1;3;33m是否自检有效备用IP地址（输入y确认，直接回车自动检测主机地址，或手动输入IP地址）: ${RESET}") " choice
-
-    if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
-        # 获取当前主机的域名
-        local hostname=$(hostname)
+    # 确保颜色变量可用
+    local GREEN_BOLD_ITALIC="\033[1;3;32m"
+    
+    echo -e "${bold_italic_yellow}正在自动检测所有可用的IP地址... (这可能需要几秒钟)${reset}"
+    
+    # 调用函数，其过程输出已被隐藏
+    local unblock_ips=($(getUnblockIP2))
+    local IP=""
+    
+    if [[ ${#unblock_ips[@]} -gt 0 ]]; then
+        # 使用绿色斜体加粗的颜色代码
+        echo -e "${GREEN_BOLD_ITALIC}检测到以下可用IP地址：${reset}"
         
-        # 根据主机域名判断使用不同的方法
-        if [[ "$hostname" =~ \.serv00\.com$ ]]; then
-            # 如果主机域名是 xxx.serv00.com，则采用两种方法
-            unblock_ips=($(getUnblockIP2))  # 获取未被墙的 IP 地址
-
-            # 如果 getUnblockIP2 获取失败，则 IP 会为空，跳过后续步骤
-            if [[ -z "$unblock_ips" ]]; then
-                echo -e "${CYAN}未能从 getUnblockIP2 获取到有效的备用 IP，尝试从 netstat 获取备用 IP...${RESET}"
-                IP=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
-            else
-                # 随机选择一个未被墙的 IP 地址作为备用 IP
-                IP=${unblock_ips[$((RANDOM % ${#unblock_ips[@]}))]}
-                echo -e "${GREEN}\033[1;32m选择的备用 IP 地址是: $IP${RESET}"
-            fi
-        elif [[ "$hostname" =~ \.ct8\.pl$ ]]; then
-            # 如果主机域名是 xxx.ct8.pl，仅采用 netstat 方法
-            IP=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
-
-            if [[ -z "$IP" ]]; then
-                # 如果 netstat 获取不到 IP，再从文件读取备用 IP
-                for file in "$base_dir/.serv00_ip" "$ip_file"; do
-                    if [[ -f "$file" ]]; then
-                        IP=$(cat "$file")
-                        if [[ -n "$IP" ]]; then
-                            echo -e "${GREEN}\033[1;32m从文件获取的备用 IP 地址是: $IP${RESET}"
-                            break
-                        fi
-                    fi
-                done
-            fi
-
-            # 如果 netstat 和文件都没有获取到 IP，给出提示
-            if [[ -z "$IP" ]]; then
-                echo -e "${RED}\033[1;31m未找到可用的备用 IP 地址，请稍后再试！${RESET}"
-                return 1
-            fi
+        local i=1
+        for ip in "${unblock_ips[@]}"; do
+            # 同样应用颜色代码
+            echo -e "  ${GREEN_BOLD_ITALIC}[$i] $ip${reset}"
+            i=$((i + 1))
+        done
+        
+        echo ""
+        
+        read -p "$(echo -e "${bold_italic_yellow}请选择一个IP (输入编号, 或直接按Enter随机选择, 或手动输入其他IP): ${reset}")" choice
+        
+        if [[ -z "$choice" ]]; then
+            IP=${unblock_ips[$((RANDOM % ${#unblock_ips[@]}))]}
+            echo -e "\033[1;3;32m已为您随机选择IP: $IP\033[0m"
+        
+        elif [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#unblock_ips[@]} ]]; then
+            IP=${unblock_ips[$((choice - 1))]}
+            echo -e "\033[1;3;32m您已选择IP: $IP\033[0m"
+            
         else
-            # 如果主机域名既不是 xxx.serv00.com 也不是 xxx.ct8.pl，默认只使用 netstat 获取 IP
-            IP=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
-
-            if [[ -z "$IP" ]]; then
-                # 如果 netstat 获取不到 IP，再从文件读取备用 IP
-                for file in "$base_dir/.serv00_ip" "$ip_file"; do
-                    if [[ -f "$file" ]]; then
-                        IP=$(cat "$file")
-                        if [[ -n "$IP" ]]; then
-                            echo -e "${GREEN}\033[1;32m从文件获取的备用 IP 地址是: $IP${RESET}"
-                            break
-                        fi
-                    fi
-                done
-            fi
-
-            # 如果 netstat 和文件都没有获取到 IP，给出提示
-            if [[ -z "$IP" ]]; then
-                echo -e "${RED}\033[1;31m未找到可用的备用 IP 地址，请稍后再试！${RESET}"
-                return 1
-            fi
+            IP="$choice"
+            echo -e "${bold_italic_green}您已手动输入IP/域名: $IP${reset}"
         fi
-    elif [[ -z "$choice" ]]; then
-        # 如果用户直接回车，自动检测 IP 地址
-        IP=$(curl -s https://api.ipify.org || { ipv6=$(curl -s --max-time 1 ipv6.ip.sb); echo "[$ipv6]"; })
-        echo -e "${CYAN}\033[1;3;32m自动检测的设备 IP 地址是: $IP${RESET}"
+
     else
-        # 如果用户输入其他内容，尝试手动输入 IP 地址
-        IP="$choice"
-        echo -e "${CYAN}\033[1;3;32m手动输入的 IP 地址是: $IP${RESET}"
+        echo -e "${bold_italic_yellow}API未能找到未被墙的IP，将尝试其他备用方案...${reset}"
+        
+        IP=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
+        
+        if [[ -z "$IP" ]]; then
+            echo "  -> 未找到netstat备用IP，正在获取服务器主IP..." >&2
+            IP=$(curl -s https://api.ipify.org || { ipv6=$(curl -s --max-time 1 ipv6.ip.sb); echo "[$ipv6]"; })
+        fi
+        
+        if [[ -n "$IP" ]]; then
+            echo -e "${bold_italic_green}已自动选择备用IP: $IP${reset}"
+        else
+            echo -e "${bold_italic_red}致命错误：所有方法都无法获取IP地址！${reset}"
+            exit 1
+        fi
     fi
 
-    # 将最终的 IP 存储到全局变量 FINAL_IP
     FINAL_IP="$IP"
-    
-    # 输出最终使用的 IP 地址
-    echo -e "${CYAN}\033[1;3;32m最终使用的IP地址是: $FINAL_IP${RESET}"
+    echo -e "${bold_italic_yellow}最终使用的IP地址是: ${FINAL_IP}${reset}"
+    sleep 1
 }
-
 
 #获取临时或固定隧道域名
 get_argodomain() {
@@ -2202,26 +2017,106 @@ bold_italic_orange() {
     bold_italic_light_blue() {
     echo -e "\033[1;3;36m$1\033[0m"
 }    
+
+# 更换/更新可用IP的函数
+change_ip() {
+    # 检查sing-box是否已安装，以及必要文件是否存在
+    if [ ! -f "$WORKDIR/config.template.json" ] || [ ! -f "$base_dir/current_active_ip.txt" ]; then
+        red "错误：sing-box未安装或配置文件不完整，无法更换IP。"
+        red "请先执行安装流程。"
+        return
+    fi
+
+    local old_ip=$(cat "$base_dir/current_active_ip.txt")
+    echo -e "${bold_italic_yellow}当前正在使用的IP是: ${old_ip}${reset}"
+    
+    echo -e "${bold_italic_yellow}正在自动检测所有可用的IP地址...${reset}"
+    
+    local unblock_ips=($(getUnblockIP2))
+    local new_ip=""
+    
+    if [[ ${#unblock_ips[@]} -gt 0 ]]; then
+        local GREEN_BOLD_ITALIC="\033[1;3;32m"
+        echo -e "${GREEN_BOLD_ITALIC}检测到以下可用IP地址：${reset}"
+        
+        local i=1
+        for ip in "${unblock_ips[@]}"; do
+            echo -e "  ${GREEN_BOLD_ITALIC}[$i] $ip${reset}"
+            i=$((i + 1))
+        done
+        echo ""
+        
+        read -p "$(echo -e "${bold_italic_yellow}请选择一个新IP (输入编号, 或直接按Enter随机选择): ${reset}")" choice
+        
+        if [[ -z "$choice" ]]; then
+            new_ip=${unblock_ips[$((RANDOM % ${#unblock_ips[@]}))]}
+            echo -e "${bold_italic_green}已为您随机选择新IP: $new_ip${reset}"
+        elif [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#unblock_ips[@]} ]]; then
+            new_ip=${unblock_ips[$((choice - 1))]}
+            echo -e "\033[1;3;32m您已选择新IP: $new_ip\033[0m"
+        else
+            red "无效输入，操作已取消。"
+            return
+        fi
+    else
+        red "未能检测到任何可用的IP地址，无法更换。请稍后重试。"
+        return
+    fi
+
+    if [[ "$new_ip" == "$old_ip" ]]; then
+        green "您选择的IP与当前IP相同，无需更改。"
+        return
+    fi
+
+    # 【关键美化】对以下状态信息应用紫色斜体加粗格式
+    bold_italic_purple "--> 正在更新核心配置文件..."
+    sed "s/__IP_ADDRESS__/${new_ip}/g" "$WORKDIR/config.template.json" > "$WORKDIR/config.json"
+    
+    bold_italic_purple "--> 正在更新节点链接..."
+    sed -i '' "s#${old_ip}#${new_ip}#g" "$WORKDIR/list.txt"
+
+    bold_italic_purple "--> 正在更新当前IP状态记录..."
+    echo "$new_ip" > "$base_dir/current_active_ip.txt"
+    
+    bold_italic_purple "--> 正在重启sing-box服务以应用新IP..."
+    pkill -f "$WORKDIR/web"
+    sleep 2
+    nohup "$WORKDIR/web" run -c "$WORKDIR/config.json" >/dev/null 2>&1 &
+    
+    if pgrep -f "$WORKDIR/web" > /dev/null; then
+       echo -e "\033[1;3;32m服务重启成功！IP已成功更换为: ${new_ip}\033[0m"
+        echo ""
+        bold_italic_purple "以下是更新后的节点信息："
+        
+        if [ -f "$WORKDIR/list.txt" ]; then
+            cat "$WORKDIR/list.txt"
+        else
+            red "错误：找不到节点信息文件 list.txt"
+        fi
+    else
+         red "错误：服务重启失败！请检查问题，或尝试手动重启。"
+    fi
+}
 # 主菜单
 menu() {
      while true; do
         clear
    echo ""
-   magenta "=== 欢迎使用SERV00和CT8|SING-BOX一键安装脚本 ==="
+   magenta "=== 欢迎使用SERV00|SING-BOX一键安装脚本 ==="
    echo ""
     bold_italic_orange "\033[1;3m=== 脚本支持:VLESS VMESS HY2 TUIC socks5 协议，UUID 自动生成 ===\033[0m"
     magenta "=== 支持安装：单，双，三个协议(面板最多只能开放3个端口)，自由选择 ==="
     bold_italic_light_blue "=== 固定argo隧道 可以优选ip或优选域名！  ==="
     bold_italic_light_blue "=== argo隧道配置文件生成网址  https://fscarmen.cloudflare.now.cc/ ==="
-    echo -e "${green}\033[1;3;33m脚本地址：\033[0m${re}\033[1;3;33mhttps://github.com/yyfalbl/singbox-2\033[0m${re}\n"
+    echo -e "${green}\033[1;3;33m脚本地址：\033[0m${re}\033[1;3;33mhttps://github.com/yyf-lbl/singbox-2\033[0m${re}\n"
     purple "\033[1;3m*****转载请著名出处，请勿滥用*****\033[0m"
     echo ""  
     get_server_info
-  echo ""
+    echo ""
 # 设置正方形大小
 size=8
-content1=$(check_singbox_installed)  # 调用第一个函数获取内容
-content2=$(check_web_status)  # 调用第二个函数获取内容
+content1=$(check_singbox_installed)
+content2=$(check_web_status)
 
 # 固定宽度
 max_width=30
@@ -2230,11 +2125,11 @@ for ((i=0; i<size; i++)); do
     if [[ $i -eq 0 || $i -eq $((size-1)) ]]; then
         echo -e "\033[1;33m=============================\033[0m"
     elif [[ $i -eq 3 ]]; then
-        printf "||   %-34s   ||\n" "$content1"  # 第一行内容左对齐，固定宽度
+        printf "||   %-34s   ||\n" "$content1"
     elif [[ $i -eq 5 ]]; then
-        printf "||   %-28s    ||\n" "$content2"  # 第二行内容左对齐，固定宽度
+        printf "||   %-28s    ||\n" "$content2"
     else
-        echo -e "\033[1;33m||                         ||\033[0m"  # 中间部分
+        echo -e "\033[1;33m||                         ||\033[0m"
     fi
 done
    echo ""
@@ -2254,25 +2149,29 @@ done
    echo "==============="
    pink "\033[1;3m8. 系统初始化\033[0m"
    echo "==============="
+   bold_italic_orange "\033[1;3m9. 更换/更新可用 IP\033[0m"
+   echo "==============="
    red "\033[1;3m0. 退出脚本\033[0m"
    echo "==========="
- # 清理输入缓冲区
-   #     while read -t 0 -n 1; do : ; done
-   reading "请输入选择(0-8): " choice
+   reading "请输入选择(0-9): " choice
    echo ""
    case "${choice}" in
         1)
             install_singbox
-             read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
+            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
             clear
             ;;
         2)
             setup_socks5
-             read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
+            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
             clear
             ;;
         3)
-             cat $WORKDIR/list.txt
+            if [ -f "$WORKDIR/list.txt" ]; then
+                cat "$WORKDIR/list.txt"
+            else
+                red "节点信息文件不存在，请先安装服务。"
+            fi
             read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
             clear
             ;;
@@ -2300,14 +2199,20 @@ done
             cleanup_and_delete
             read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
             clear
-            ;;  
+            ;;
+        9)
+            change_ip
+            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
+            clear
+            ;;
         0) exit 0 ;;   
       *)
-            red "\033[1;3m无效的选项，请输入 0 到 8\033[0m"
-            echo ""
+            red "\033[1;3m无效的选项，请输入 0 到 9\033[0m"
+            sleep 2
             ;;
     esac
     done
-   
 }
 menu
+   
+
