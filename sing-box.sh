@@ -1717,7 +1717,9 @@ run_sb() {
    
   fi
 #  echo "$WORKDIR/bot $args"
-}
+} 
+
+#更换ip函数
 getUnblockIP2() {
     # 获取当前主机名
     local hostname=$(hostname)
@@ -1728,20 +1730,18 @@ getUnblockIP2() {
     local unblock_ips=()
     local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
 
-    echo "🧭 正在检测主机: ${hosts[*]} ..." >/dev/null 2>&1
-
+    # 循环检测
     for host in "${hosts[@]}"; do
         local response
-        response=$(curl -s "https://2670819.xyz/api.php?host=$host") || continue
+        # 使用你的新 API
+        response=$(curl -sk --fail "https://2670819.xyz/api.php?host=$host") || continue
         if [[ -z "$response" ]]; then
             continue
         fi
 
-        # 使用 jq 解析 JSON
-        local ip
-        local status
-        ip=$(echo "$response" | jq -r '.host') >/dev/null 2>&1
-        status=$(echo "$response" | jq -r '.status') >/dev/null 2>&1
+        # 【关键修改】：不再依赖 jq，使用 grep 和 cut 解析 JSON
+        local ip=$(echo "$response" | grep '"host"' | cut -d '"' -f 4)
+        local status=$(echo "$response" | grep '"status"' | cut -d '"' -f 4)
 
         if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
             unblock_ips+=("$ip")
@@ -1749,11 +1749,10 @@ getUnblockIP2() {
     done
 
     if [[ ${#unblock_ips[@]} -eq 0 ]]; then
-        echo "🚫 未找到有效的未被墙 IP 地址" >/dev/null 2>&1
         return
     fi
 
-    # 只输出可用 IP
+    # 只输出可用 IP 列表供 get_ip 函数处理
     echo "${unblock_ips[@]}"
 }
 get_ip() {
