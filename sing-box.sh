@@ -69,11 +69,11 @@ export NEZHA_PORT=${NEZHA_PORT:-'5555'}
 export NEZHA_KEY=${NEZHA_KEY:-''}
 
 # WARP（WireGuard）出站参数：默认沿用原脚本值，建议换成你自己的并通过环境变量传入
-WG_PRIVATE_KEY=${WG_PRIVATE_KEY:-'gBthRjevHDGyV0KvYwYE52NIPy29sSrVr6rcQtYNcXA='}
+WG_PRIVATE_KEY=${WG_PRIVATE_KEY:-'oILCcN/OtgJoC2krgFM8QG212bH/cwcGOyz5JkTTFkA='}
 WG_PEER_PUBLIC_KEY=${WG_PEER_PUBLIC_KEY:-'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo='}
 WG_ADDR_V4=${WG_ADDR_V4:-'172.16.0.2/32'}
-WG_ADDR_V6=${WG_ADDR_V6:-'2606:4700:110:812a:4929:7d2a:af62:351c/128'}
-WG_RESERVED=${WG_RESERVED:-'6, 146, 6'}
+WG_ADDR_V6=${WG_ADDR_V6:-'2606:4700:110:8006:eeb0:dcde:fb07:fa8a/128'}
+WG_RESERVED=${WG_RESERVED:-'28, 63, 66'}
 
 # 下载文件 sha256 校验（可选）。键为下载文件名，例如 EXPECTED_SHA256[amd64-web]="xxxx"
 # 为空则跳过校验，但会打印实际 hash 方便你记录。
