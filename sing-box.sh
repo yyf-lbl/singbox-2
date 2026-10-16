@@ -1879,7 +1879,7 @@ if [[ "$current_fqdn" == *.serv00.com ]]; then
           # 如果 args 包含临时隧道的配置，表示开启了 Argo 临时隧道
           green "===Argo临时隧道功能已开启==="
           echo ""
-         # 只有 config.json 中确实配置了 VMess，才输出 VMess 链接
+# 只有 config.json 中确实配置了 VMess，才输出 VMess 链接
 if [[ -f "$WORKDIR/config.json" ]] &&
    grep -qE '"type"[[:space:]]*:[[:space:]]*"vmess"' "$WORKDIR/config.json"; then
 
@@ -1888,6 +1888,20 @@ if [[ -f "$WORKDIR/config.json" ]] &&
     printf "${YELLOW}\033[1mvmess://$(echo "{ \"v\": \"2\", \"ps\": \"${USERNAME}-${subdomain}\", \"add\": \"$CFIP\", \"port\": \"$CFPORT\", \"id\": \"$UUID\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"$argodomain\", \"path\": \"/vmess\", \"tls\": \"tls\", \"sni\": \"$argodomain\", \"alpn\": \"\", \"fp\": \"\"}" | base64 -w0)${RESET}\n"
 
     echo ""
+else
+    # 如果未检测到 VMess 配置，智能询问用户是否临时生成
+    read -p "$(echo -e "\033[1;3;33m检测到未配置 VMess，是否临时生成一个隧道链接？(y/N 默认不生成): \033[0m")" gen_vmess
+    gen_vmess=${gen_vmess:-n}
+    
+    if [[ "$gen_vmess" =~ ^[Yy]$ ]]; then
+        echo -n -e "\033[1;3;31m以下为您临时生成的 vmess 开启隧道功能链接...\033[0m\n"
+        
+        printf "${YELLOW}\033[1mvmess://$(echo "{ \"v\": \"2\", \"ps\": \"${USERNAME}-${subdomain}\", \"add\": \"$CFIP\", \"port\": \"$CFPORT\", \"id\": \"$UUID\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"$argodomain\", \"path\": \"/vmess\", \"tls\": \"tls\", \"sni\": \"$argodomain\", \"alpn\": \"\", \"fp\": \"\"}" | base64 -w0)${RESET}\n"
+        
+        echo ""
+    else
+        echo -e "\033[1;3;32m已跳过生成 VMess 隧道链接。\033[0m"
+    fi
 fi
     elif grep -q "tunnel:" "$WORKDIR/tunnel.yml" 2>/dev/null; then
           # 检查 tunnel.yml 文件中是否有 tunnel 配置，表示 Argo 隧道开启
