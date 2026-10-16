@@ -1,868 +1,525 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# ==============================================================================
+#  SERV00 | SING-BOX 一键脚本（重构版，面向 FreeBSD / Serv00）
+#  - 菜单与交互流程与原版保持一致
+#  - 修复：进程误杀、拼写错误、端口分配逻辑、list.txt 混入颜色码等
+#  - 安全：TUIC 随机密码、目录权限 700、去掉 eval、下载校验、危险操作二次确认
+# ==============================================================================
 
-# Color definitions
-bold_red='\033[1;3;31m'
-bold_green='\033[1;3;32m'
-bold_yellow='\033[1;3;33m'
-bold_purple='\033[1;3;35m'
-red='\033[1;3;31m'
-reset='\033[0m'
-RED='\033[1;31m'
-BOLD_ITALIC='\033[1;3m'
-RESET='\033[0m'
-GREEN_BOLD_ITALIC="\033[1;3;32m"
-# Formatting functions
-bold_italic_red() { echo -e "${bold_red}\033[3m$1${reset}"; }
-bold_italic_green() { echo -e "${bold_green}\033[3m$1${reset}"; }
-bold_italic_yellow() { echo -e "${bold_yellow}\033[3m$1${reset}"; }
-bold_italic_purple() { echo -e "${bold_purple}\033[3m$1${reset}"; }
-RED_BOLD_ITALIC='\033[1;3;31m'
-GREEN_BOLD_ITALIC='\033[1;3;32m'
-red() {
-    local RED='\033[0;31m'      # 红色
-    local BOLD='\033[1m'        # 加粗
-    local ITALIC='\033[3m'      # 斜体
-    local RESET='\033[0m'       # 重置
-    echo -e "${BOLD}${ITALIC}${RED}$1${RESET}"
+if [ -z "${BASH_VERSION:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    echo "需要 bash 4+ 运行本脚本（例如: bash $0）" >&2
+    exit 1
+fi
+
+trap 'printf "\n"; exit 130' INT
+
+# ------------------------------------------------------------------------------
+# 颜色与输出（全部集中在这里，其余地方只调用函数）
+# ------------------------------------------------------------------------------
+C_0=$'\033[0m'
+C_R=$'\033[1;3;31m'
+C_G=$'\033[1;3;32m'
+C_Y=$'\033[1;3;33m'
+C_P=$'\033[1;3;35m'
+C_C=$'\033[1;3;36m'
+C_O=$'\033[1;3;38;5;208m'
+
+_say()   { printf '%s%s%s\n' "$1" "$2" "$C_0"; }
+red()    { _say "$C_R" "$*"; }
+green()  { _say "$C_G" "$*"; }
+yellow() { _say "$C_Y" "$*"; }
+purple() { _say "$C_P" "$*"; }
+cyan()   { _say "$C_C" "$*"; }
+orange() { _say "$C_O" "$*"; }
+
+# ask 变量名 "提示" [默认值]   —— 不使用 eval
+ask() {
+    local _ans
+    printf '%s%s%s' "$C_Y" "$2" "$C_0"
+    IFS= read -r _ans || { echo; exit 1; }
+    [[ -z $_ans ]] && _ans=${3:-}
+    printf -v "$1" '%s' "$_ans"
 }
 
-# 设置工作目录
+pause() {
+    printf '%s操作完成，按任意键继续...%s' "$C_Y" "$C_0"
+    read -rsn1 _
+    echo
+}
+
+# ------------------------------------------------------------------------------
+# 全局变量
+# ------------------------------------------------------------------------------
 WORKDIR="$HOME/sbox"
-mkdir -p $HOME/.beifile
+base_dir="$HOME/.beifile"
+USERNAME=$(whoami)
+UID_NUM=$(id -u)
+FQDN=$(hostname -f 2>/dev/null || hostname)
+SUBDOMAIN=${FQDN%%.*}
+SERV_DOMAIN="$USERNAME.serv00.net"
+
+API_URL="https://2670819.xyz/api.php"
+GH_BASE="https://github.com/yyfalbl/singbox-2/releases/download/v1.0.0"
+IPV4_RE='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+
 export CFIP=${CFIP:-'www.visa.com.tw'}
 export CFPORT=${CFPORT:-'443'}
-base_dir="$HOME/.beifile"
-ip_file="$base_dir/saved_ip.txt"
-ip1_file="$base_dir/saved_ip1.txt"
-saved_ip=$(cat "$base_dir/.serv00_ip" 2>/dev/null)
-ip_address=""
+export NEZHA_SERVER=${NEZHA_SERVER:-''}
+export NEZHA_PORT=${NEZHA_PORT:-'5555'}
+export NEZHA_KEY=${NEZHA_KEY:-''}
+
+# WARP（WireGuard）出站参数：默认沿用原脚本值，建议换成你自己的并通过环境变量传入
+WG_PRIVATE_KEY=${WG_PRIVATE_KEY:-'gBthRjevHDGyV0KvYwYE52NIPy29sSrVr6rcQtYNcXA='}
+WG_PEER_PUBLIC_KEY=${WG_PEER_PUBLIC_KEY:-'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo='}
+WG_ADDR_V4=${WG_ADDR_V4:-'172.16.0.2/32'}
+WG_ADDR_V6=${WG_ADDR_V6:-'2606:4700:110:812a:4929:7d2a:af62:351c/128'}
+WG_RESERVED=${WG_RESERVED:-'6, 146, 6'}
+
+# 下载文件 sha256 校验（可选）。键为下载文件名，例如 EXPECTED_SHA256[amd64-web]="xxxx"
+# 为空则跳过校验，但会打印实际 hash 方便你记录。
+declare -A EXPECTED_SHA256=()
+
+mkdir -p "$base_dir" "$WORKDIR"
+chmod 700 "$base_dir" "$WORKDIR" 2>/dev/null
+
+ip_file_cache="$base_dir/unblock_ips.txt"
+ARGO_CONF="$base_dir/argo.conf"
+SERVER_INFO_CACHE=""
 FINAL_IP=""
-# 获取没有被墙的ip
-getUnblockIP() {
-  # 获取当前主机的主机名
-  local hostname=$(hostname)
-  
-  # 从主机名中提取出主机编号
-  local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
+REALITY_PUB=""
+ARGO_CONFIGURED=false
+INSTALL_VLESS=false; INSTALL_VMESS=false; INSTALL_HYSTERIA2=false; INSTALL_TUIC=false
+vless_port=""; vmess_port=""; hy2_port=""; tuic_port=""; socks5_port=""
+declare -A PORT_MAP=()
 
-  # 构建主机名数组
-  local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
+# UUID 持久化
+UUID_FILE="$base_dir/.singbox_uuid"
+if [[ -s $UUID_FILE ]]; then
+    UUID=$(<"$UUID_FILE")
+else
+    UUID=$(uuidgen)
+    printf '%s\n' "$UUID" > "$UUID_FILE"
+fi
+export UUID
 
-  # 定义存储文件
-  local ip_file="$WORKDIR/unblock_ips.txt"
+rand_str() { LC_ALL=C tr -dc 'a-zA-Z0-9' </dev/urandom | head -c "${1:-10}"; }
 
-  # 如果文件存在且不为空，直接读取
-  if [[ -f "$ip_file" && -s "$ip_file" ]]; then
-    while read -r ip; do
-       echo -e "\033[32;3;1m当前服务器可用 ip 地址: $ip\033[0m" 
-    done < "$ip_file"
-    return 0
-  fi
+# TUIC 密码持久化（不再硬编码 admin123）
+TUIC_PASS_FILE="$base_dir/.tuic_pass"
+if [[ -s $TUIC_PASS_FILE ]]; then
+    TUIC_PASS=$(<"$TUIC_PASS_FILE")
+else
+    TUIC_PASS=$(rand_str 16)
+    ( umask 077; printf '%s\n' "$TUIC_PASS" > "$TUIC_PASS_FILE" )
+fi
 
-  local unblock_ips=()
+# Argo 配置持久化（重启后固定隧道不丢失）
+if [[ -z ${ARGO_AUTH:-} && -f $ARGO_CONF ]]; then
+    # shellcheck disable=SC1090
+    . "$ARGO_CONF"
+fi
+ARGO_DOMAIN=${ARGO_DOMAIN:-}
+ARGO_AUTH=${ARGO_AUTH:-}
 
-  # 遍历主机
-  for host in "${hosts[@]}"; do
-    # 修改为你的 API 地址
-    local response=$(curl -sk --fail "https://2670819.xyz/api.php?host=$host")
-
-    if [ $? -ne 0 ]; then
-      echo "无法访问自定义 API ($host)，尝试跳过..."
-      continue
-    fi
-
-    # 【核心修改点 2】：适配 FreeBSD (Serv00) 的解析逻辑
-    # 使用 grep 抓取行，再用 cut 提取引号里的内容
-    local ip=$(echo "$response" | grep '"host"' | cut -d '"' -f 4)
-    local status=$(echo "$response" | grep '"status"' | cut -d '"' -f 4)
-
-    # 判断状态
-    if [[ "$status" == "Accessible" ]]; then
-      unblock_ips+=("$ip")
-    fi
-  done 
-
-  if [ ${#unblock_ips[@]} -eq 0 ]; then
-    echo "没有找到任何可用的未被墙服务器IP (通过 2670819.xyz 查询)。"
-    return 1
-  else
-    for ip in "${unblock_ips[@]}"; do
-      echo -e "\033[32;3;1m当前服务器可用 ip 地址: $ip\033[0m"
-      echo "$ip" >> "$ip_file"
-    done
-  fi
-
-  return 0
+save_argo_conf() {
+    ( umask 077; printf 'ARGO_DOMAIN=%q\nARGO_AUTH=%q\n' "$ARGO_DOMAIN" "$ARGO_AUTH" > "$ARGO_CONF" )
 }
-# 定义函数来检查密码是否存在
 
-# 备用ip获取函数
+# ------------------------------------------------------------------------------
+# 通用工具
+# ------------------------------------------------------------------------------
+b64() {
+    if command -v base64 >/dev/null 2>&1; then base64 | tr -d '\n'; else openssl base64 -A; fi
+}
+
+# 从 JSON 文本里取字符串字段（不依赖 jq）
+_json_get() {
+    printf '%s' "$1" | tr -d '\n' |
+        sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p"
+}
+
+# 进程管理：按完整路径匹配，避免误杀
+proc_pids()    { pgrep -u "$UID_NUM" -f "$WORKDIR/$1( |\$)" 2>/dev/null; }
+proc_running() { [[ -n $(proc_pids "$1") ]]; }
+
+stop_proc() {
+    local pids i
+    pids=$(proc_pids "$1")
+    [[ -z $pids ]] && return 1
+    # shellcheck disable=SC2086
+    kill $pids 2>/dev/null
+    for i in 1 2 3 4 5; do
+        sleep 1
+        [[ -z $(proc_pids "$1") ]] && return 0
+    done
+    # shellcheck disable=SC2046
+    kill -9 $(proc_pids "$1") 2>/dev/null
+    return 0
+}
+
+# 杀掉当前用户除自身及其父进程链以外的所有进程
+kill_user_procs_except_self() {
+    local sig=${1:-TERM} keep=" $$ " p=$$ pp pid
+    while :; do
+        pp=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+        [[ -z $pp || $pp -le 1 ]] && break
+        keep+="$pp "
+        p=$pp
+    done
+    for pid in $(pgrep -u "$UID_NUM"); do
+        [[ $keep == *" $pid "* ]] && continue
+        kill -"$sig" "$pid" 2>/dev/null
+    done
+}
+
+config_has_vmess() {
+    [[ -f $WORKDIR/config.json ]] &&
+        grep -qE '"type"[[:space:]]*:[[:space:]]*"vmess"' "$WORKDIR/config.json"
+}
+
+config_vmess_port() {
+    [[ -f $WORKDIR/config.json ]] || return
+    awk '/"type"[[:space:]]*:[[:space:]]*"vmess"/ {f=1}
+         f && /"listen_port"/ {gsub(/[^0-9]/, ""); print; exit}' "$WORKDIR/config.json"
+}
+
+# ------------------------------------------------------------------------------
+# IP 检测
+# ------------------------------------------------------------------------------
+# 输出可用(未被墙)IP，每行一个。参数 cache: 允许使用 60 分钟内的缓存
+fetch_unblock_ips() {
+    if [[ ${1:-} == cache && -s $ip_file_cache ]] &&
+       [[ -n $(find "$ip_file_cache" -mmin -60 2>/dev/null) ]]; then
+        cat "$ip_file_cache"
+        return 0
+    fi
+
+    local hn num host resp ip st out=()
+    hn=$(hostname)
+    num=${hn%%.*}; num=${num#s}
+    for host in "$hn" "web${num}.serv00.com" "cache${num}.serv00.com"; do
+        resp=$(curl -sk --fail --max-time 8 "$API_URL?host=$host") || continue
+        [[ -z $resp ]] && continue
+        ip=$(_json_get "$resp" host)
+        st=$(_json_get "$resp" status)
+        [[ $st == Accessible && $ip =~ $IPV4_RE ]] && out+=("$ip")
+    done
+    (( ${#out[@]} )) || return 1
+    printf '%s\n' "${out[@]}" | tee "$ip_file_cache"
+}
+
 beiyong_ip() {
-    if [[ -f "$base_dir/.serv00_ip" ]]; then
-        saveda_ip=$(cat "$base_dir/.serv00_ip")
-        echo -e "\033[1;32;3m当前服务器备用 IP 地址: $saveda_ip\033[0m"
+    local saved ips
+    if [[ -s $base_dir/.serv00_ip ]]; then
+        saved=$(<"$base_dir/.serv00_ip")
+        green "当前服务器备用 IP 地址: $saved"
         return
     fi
-
-    # 直接尝试从 netstat 获取
-    ip_addresses=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
-
-    if [[ -z "$ip_addresses" ]]; then
-        echo -e "\033[1;31m未能自动获取备用 IP。\033[0m"
+    ips=$(netstat -i 2>/dev/null | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
+    if [[ -z $ips ]]; then
+        red "未能自动获取备用 IP。"
     else
-        echo "$ip_addresses" > "$base_dir/.serv00_ip"
-        echo -e "\033[1;32;3m当前服务器备用 IP 地址: $ip_addresses\033[0m"
+        printf '%s\n' "$ips" > "$base_dir/.serv00_ip"
+        green "当前服务器备用 IP 地址: $ips"
     fi
 }
-# 清理所有文件函数
-cleanup_delete() {
-    local target_dir="$HOME"
-    local exclude_dirs="backups:.beifile"
 
-    if [ -d "$target_dir" ]; then
-        echo -n -e "\033[1;3;33m准备卸载所有程序及文件，请稍后...\033[0m\n"
-        sleep 2
-
-        read -p "$(echo -e "\033[1;3;33m您确定要删除所有文件吗？(y/n Enter默认y): \033[0m")" confirmation
-        confirmation=${confirmation:-y}
-        sleep 2
-        
-        if [[ "$confirmation" != "y" && "$confirmation" != "Y" ]]; then
-            echo -e "\033[1;3;32m操作已取消。\033[0m"
-            return
-        fi
-
-        # 删除除排除目录以外的所有内容
-        IFS=':' read -r -a exclude_array <<< "$exclude_dirs"
-        find "$target_dir" -mindepth 1 -maxdepth 1 \( -name "${exclude_array[0]}" -o -name "${exclude_array[1]}" \) -prune -o -exec rm -rf {} +
-
-        # 检查删除是否成功
-        local remaining_items=$(find "$target_dir" -mindepth 1 -maxdepth 1 | grep -v -e "${exclude_array[0]}" -e "${exclude_array[1]}")
-        if [ -z "$remaining_items" ]; then
-            echo -n -e "\033[1;3;31m所有程序已卸载成功!\033[0m\n"
-            exit 0
+server_info_raw() {
+    local ip ips i
+    ip=$(curl -s --max-time 5 https://api.ipify.org)
+    [[ -z $ip ]] && ip=$(curl -s --max-time 5 ipv6.ip.sb)
+    green "当前服务器的 IP 地址是：$ip"
+    if [[ $FQDN == *.serv00.com ]]; then
+        green "当前服务器主机地址是：$FQDN"
+        yellow "本机域名是: $SERV_DOMAIN"
+        mapfile -t ips < <(fetch_unblock_ips cache)
+        if (( ${#ips[@]} )); then
+            for i in "${ips[@]}"; do green "当前服务器可用 ip 地址: $i"; done
         else
-            echo "删除操作出现问题，请检查是否有权限问题或其他错误。"
-        fi
-    else
-        echo "目录 $target_dir 不存在。"
-    fi
-}
-
-# 清理所有文件和进程的函数
-cleanup_and_delete() {
-    local target_dir="$HOME"
-    local exclude_dirs="backups"
-    
-    local RED_BOLD_ITALIC='\033[1;3;31m'
-    local YELLOW_BOLD_ITALIC='\033[1;3;33m'
-    local RESET='\033[0m'
-
-    if [ -d "$target_dir" ]; then
-        echo -n -e "\033[1;3;33m准备初始化系统，请稍后...\033[0m\n"
-        sleep 2
-
-        read -p "$(echo -e "\033[1;3;33m您确定要还原系统吗？\033[0m\n\033[1;31;3m(警告:此操作将会删除系统所有文件和进程!)\033[0m\n\033[1;3;33m(y/n Enter默认y): \033[0m")" confirmation
-        confirmation=${confirmation:-y}
-        sleep 2
-        
-        if [[ "$confirmation" != "y" && "$confirmation" != "Y" ]]; then
-            echo -e "\033[1;3;32m操作已取消。\033[0m"
-            return
-        fi
-
-        # 终止当前用户的所有进程
-        echo -e "${RED_BOLD_ITALIC}--> 正在终止所有用户进程...${RESET}"
-        pkill -u $(whoami) >/dev/null 2>&1
-        sleep 3
-
-        # 明确告知用户需要手动删除定时任务
-        echo -e "${YELLOW_BOLD_ITALIC}--> 重要提示: 所有用户进程已终止。${RESET}"
-       # echo -e "${YELLOW_BOLD_ITALIC}--> 请在初始化完成后，务必手动登录网页控制面板，清空所有 Cron Jobs。${RESET}"
-        sleep 3 
-
-        # 删除除排除目录以外的所有内容
-        echo -e "${RED_BOLD_ITALIC}--> 正在删除用户主目录下的所有文件...${RESET}"
-          sleep 3 
-
-        IFS=':' read -r -a exclude_array <<< "$exclude_dirs"
-        find "$target_dir" -mindepth 1 -maxdepth 1 \( -name "${exclude_array[0]}" -o -name "${exclude_array[1]}" \) -prune -o -exec rm -rf {} +
-
-        local remaining_items=$(find "$target_dir" -mindepth 1 -maxdepth 1 | grep -v -e "${exclude_array[0]}" -e "${exclude_array[1]}")
-        if [ -z "$remaining_items" ]; then
-            # 在最终的成功信息里再次提醒
-            echo -n -e "\033[1;3;32m已成功初始化系统! \033[0m\n"
-            exit 0
-        else
-            echo "删除操作出现问题，请检查是否有权限问题或其他错误。"
-        fi
-    else
-        echo "目录 $target_dir 不存在。"
-    fi
-}
-
-# 获取主机域名和ip地址
-get_server_info() {
-    CYAN="\033[1;36m"
-    GREEN_BOLD_ITALIC="\033[1;3;32m"
-    YELLOW_BOLD_ITALIC="\033[1;3;33m"
-    RESET="\033[0m"
-
-    user=$(whoami)
-    # 直接固定为 serv00 域名
-    SERV_DOMAIN="$user.serv00.net"
-
-    IP=$(curl -s https://api.ipify.org)
-    [[ -z "$IP" ]] && IP=$(curl -s ipv6.ip.sb)
-
-    echo -e "${GREEN_BOLD_ITALIC}当前服务器的 IP 地址是：$IP${RESET}"
-
-    current_fqdn=$(hostname -f)
-
-    if [[ "$current_fqdn" == *.serv00.com ]]; then
-        echo -e "${GREEN_BOLD_ITALIC}当前服务器主机地址是：$current_fqdn${RESET}"
-        echo -e "${YELLOW_BOLD_ITALIC}本机域名是: $user.serv00.net${RESET}"
-        
-        if ! getUnblockIP; then
-            echo -e "${CYAN}未能获取 API IP，尝试获取本地备用 IP...${RESET}"
+            echo "没有找到任何可用的未被墙服务器IP (通过 2670819.xyz 查询)。"
+            cyan "未能获取 API IP，尝试获取本地备用 IP..."
             beiyong_ip
         fi
     else
-        echo -e "${CYAN}当前环境非 Serv00 标准节点，请检查。${RESET}"
+        cyan "当前环境非 Serv00 标准节点，请检查。"
     fi
 }
 
-# 检查sing-box运行
-check_singbox_installed() {
-    if [ -e "$HOME/sbox/web" ]; then
-        echo -e "$(bold_italic_green "欢迎使用SINGBOX服务")"
-    else
-        echo -e "$(bold_italic_red "sing-box当前未安装!")"
-    fi
+get_server_info() {
+    [[ -z $SERVER_INFO_CACHE ]] && SERVER_INFO_CACHE=$(server_info_raw)
+    printf '%s\n' "$SERVER_INFO_CACHE"
 }
 
-# Function to check if sing-box is running
-check_web_status() {
-    if pgrep -x "web" > /dev/null; then
-        echo -e "$(bold_italic_green "sing-box Running！")"
-    else
-        echo -e "$(bold_italic_red "sing-boxNotRunning")"
-    fi
-}
+# 选择/检测 IP，结果放到 FINAL_IP
+get_ip() {
+    local ips=() ip="" choice i
+    yellow "正在自动检测所有可用的IP地址... (这可能需要几秒钟)"
+    mapfile -t ips < <(fetch_unblock_ips)
 
-
-
-# Socks5 安装和配置的主函数
-
-generate_random_string() {
-  local length=$1
-  openssl rand -base64 "$length" | tr -dc 'a-zA-Z0-9'
-}
-
-setup_socks5() {
-  # 设置工作目录
-  FILE_PATH="$WORKDIR"
-  CYAN="\033[1;3;33m"
-  RESET="\033[0m"
-  user=$(whoami)  # 获取当前用户名
-  SERV_DOMAIN="$user.serv00.net"  # 使用本机域名格式
-
-
-  # 提示用户是否安装 Socks5 代理
-  read -p "$(echo -e "${CYAN}是否安装 Socks5 代理？(Y/N 回车N) ${RESET}") " install_socks5_answer
-  install_socks5_answer=${install_socks5_answer^^}
-
-  # 判断是否安装 Socks5 代理
-  if [[ "$install_socks5_answer" != "Y" ]]; then
-    echo -e "${CYAN}已取消安装 Socks5 代理。${RESET}"
-    return
-  fi
-
-  # 提示用户输入IP地址（或按回车自动检测）
-  get_ip
-  # 如果用户输入了IP地址，使用用户提供的IP地址，否则自动检测
-  if [ -n "$user_ip" ]; then
-      IP="$user_ip"
-  else
-      IP=$FINAL_IP
-  fi
-
-  # 输出最终使用的IP地址和域名
-  echo -e "${CYAN}设备的IP地址是: ${IP}${RESET}"
-  echo -e "${CYAN}本机域名是: ${SERV_DOMAIN}${RESET}"
-
-  # 提示用户输入 socks5 端口号
-  read -p "$(echo -e "${CYAN}请输入 socks5 端口,按下ENTER自动检测 (面板开放的TCP端口): ${RESET}")" SOCKS5_PORT
-    read_socks5_port
-  # 提示用户输入用户名和密码，如果按回车则生成随机用户名和密码
-  read -p "$(echo -e "${CYAN}请输入 socks5 用户名（按回车生成随机用户名）: ${RESET}")" SOCKS5_USER
-  if [ -z "$SOCKS5_USER" ]; then
-    SOCKS5_USER=$(generate_random_string 6)  # 生成6位随机用户名
-    echo -e "${CYAN}随机生成的 socks5 用户名是: ${SOCKS5_USER}${RESET}"
-  fi
-
-  read -p "$(echo -e "${CYAN}请输入 socks5 密码（按回车生成随机密码，不能包含@和:）: ${RESET}")" SOCKS5_PASS
-  while [[ -z "$SOCKS5_PASS" ]]; do
-    SOCKS5_PASS=$(generate_random_string 10)  # 生成10位随机密码
-    if [[ "$SOCKS5_PASS" == *"@"* || "$SOCKS5_PASS" == *":"* ]]; then
-      continue
-    fi
-    break
-  done
-  if [ -z "$SOCKS5_PASS" ]; then
-    echo -e "${CYAN}随机生成的 socks5 密码是: ${SOCKS5_PASS}${RESET}"
-  fi
-
-  # 创建配置文件
-  echo -e "${CYAN}创建配置文件: ${FILE_PATH}/socks.json${RESET}"
-  cat > "$FILE_PATH/socks.json" << EOF
-{
-  "log": {
-    "access": "/dev/null",
-    "error": "/dev/null",
-    "loglevel": "none"
-  },
-  "inbounds": [
-    {
-      "port": "$socks5_port",
-      "protocol": "socks",
-      "tag": "socks",
-      "settings": {
-        "auth": "password",
-        "udp": false,
-        "ip": "0.0.0.0",
-        "userLevel": 0,
-        "accounts": [
-          {
-            "user": "$SOCKS5_USER",
-            "pass": "$SOCKS5_PASS"
-          }
-        ]
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "tag": "direct",
-      "protocol": "freedom"
-    }
-  ]
-}
-EOF
-
-  # 检查是否需要重新下载 socks5 程序
-  if [[ ! -e "${FILE_PATH}/socks5" ]]; then
-    echo -e "${CYAN}下载 socks5 程序...${RESET}"
-    curl -L -sS -o "${FILE_PATH}/socks5" "https://github.com/yyfalbl/singbox-2/releases/download/v1.0.0/socks5"
-    if [ $? -ne 0 ]; then
-      echo -e "${CYAN}下载 socks5 程序失败，请检查网络连接。${RESET}"
-      return
-    fi
-  else
-    read -p "$(echo -e "${CYAN}socks5 程序已存在，是否重新下载？(Y/N 回车N): ${RESET}")" reinstall_socks5_answer
-    reinstall_socks5_answer=${reinstall_socks5_answer^^}
-    if [[ "$reinstall_socks5_answer" == "Y" ]]; then
-      echo -e "${CYAN}重新下载 socks5 程序...${RESET}"
-      curl -L -sS -o "${FILE_PATH}/socks5" "https://github.com/yyfalbl/singbox-2/releases/download/v1.0.0/socks5"
-      if [ $? -ne 0 ]; then
-        echo -e "${CYAN}重新下载 socks5 程序失败，请检查网络连接。${RESET}"
-        return
-      fi
-    fi
-  fi
-
-  # 启动 socks5 程序
-  chmod +x "${FILE_PATH}/socks5"
-  nohup "${FILE_PATH}/socks5" -c "${FILE_PATH}/socks.json" >/dev/null 2>&1 &
-  sleep 1
-
-  # 检查程序是否启动成功
-  if pgrep -x "socks5" > /dev/null; then
-    echo -e "\033[1;3;32mSocks5 代理程序启动成功\033[0m"
-    echo -e "\033[1;3;33mSocks5 代理地址： $IP:$socks5_port 用户名：$SOCKS5_USER 密码：$SOCKS5_PASS\033[0m" 
-    echo ""
-    # 显示代理 URL
-    echo -e "\033[1;3;33msocks://${SOCKS5_USER}:${SOCKS5_PASS}@${SERV_DOMAIN}:${socks5_port}\033[0m"
-      
-    # 使用 printf 将内容追加到 list.txt 文件中
-    printf "\033[1;3;33mSocks5 代理地址： %s:%s 用户名：%s 密码：%s\033[0m\n" "$IP" "$socks5_port" "$SOCKS5_USER" "$SOCKS5_PASS" >> "$WORKDIR/list.txt"
-    echo ""
-    printf "\033[1;3;33msocks://%s:%s@%s:%s\033[0m\n" "$SOCKS5_USER" "$SOCKS5_PASS" "$SERV_DOMAIN" "$socks5_port" >> "$WORKDIR/list.txt"
-        echo ""
-  else
-    echo -e "\033[1;3;31mSocks5 代理程序启动失败\033[0m"
-  fi
-}
-    
-# 定义存储 UUID 的文件路径
-UUID_FILE="${HOME}/.beifile/.singbox_uuid"
-
-# Check if UUID file exists
-if [ -f "$UUID_FILE" ]; then
-    export UUID=$(cat "$UUID_FILE")  # Read the existing UUID
-else
-    export UUID=$(uuidgen)  # Generate a new UUID
-    echo "$UUID" > "$UUID_FILE"  # Save the UUID to the file
-fi
-
-export NEZHA_SERVER=${NEZHA_SERVER:-''}
-export NEZHA_PORT=${NEZHA_PORT:-'5555'}     
-export NEZHA_KEY=${NEZHA_KEY:-''}
-
-
-
-# 确保工作目录存在
-mkdir -p "$WORKDIR"
-
-# 创建工作目录并设置权限
-if [ ! -d "$WORKDIR" ]; then
-    mkdir -p "$WORKDIR"
-    chmod 777 "$WORKDIR"
-fi
-  
-# 绿色文本输出函数
-green() {
-  echo -e "\e[1;3;32m\e[1m\e[3m$1\e[0m"
-}
-
-# 黄色斜体加粗输出函数
-yellow_bold_italic() {
-  echo -e "\e[1;3;33m$1\e[0m"
-}
-
-# 自定义带颜色的读取函数
-colored_read() {
-  local prompt="$1"
-  echo -ne "\e[1;3;33m${prompt}\e[0m"  # 输出提示信息
-  builtin read input  # 使用原生 read
-}
-
-# 读取函数
-reading() {
-  colored_read "$1"
-  eval "$2=\$input"
-}
-
-# 加粗绿色输出函数
-bold_italic_green() {
-  echo -e "\e[1;3;32m$1\e[0m"
-}
-
-
-declare -A port_array  # 确保声明关联数组
-# 加粗黄色输出函数
-bold_italic_yellow() {
-  echo -e "\e[1;3;33m$1\e[0m"
-}
-check_port_in_use() {
-    local port=$1
-    if sockstat -4 | grep -q ":$port"; then
-        return 0  # 端口被占用
-    else
-        return 1  # 端口未被占用
-    fi
-}
-delete_unused_port() {
-    local port_list=$(devil port list | awk 'NR>1')  # 跳过标题行
-    if [[ -z "$port_list" ]]; then
-        echo "没有找到已分配的端口。"
-        return
-    fi
-
-    local port_count=$(echo "$port_list" | wc -l)
-
-    if [[ "$port_count" -ge 3 ]]; then
-        echo -e "\e[1;3;31m以下是可删除的端口(黄色代表占用该端口,不可删除!)：\e[0m"
-        while read -r line; do
-            local port=$(echo "$line" | awk '{print $1}')
-            local type=$(echo "$line" | awk '{print $2}')
-            if check_port_in_use "$port"; then
-                echo -e "\e[1;3;33m$line【已被占用】\e[0m"
-            else
-                echo -e "\e[1;3;32m$line【未被占用】\e[0m"
-            fi
-        done <<< "$port_list"
-
-        local valid_input=false
-        while [[ "$valid_input" == false ]]; do
-            read -p "$(echo -e '\e[1;3;33m请输入要删除的端口号（直接按Enter删除一个未占用的端口）: \e[0m')" port_to_delete
-
-            if [[ -z "$port_to_delete" ]]; then
-                port_to_delete=$(echo "$port_list" | awk '{print $1}' | while read -r p; do
-                    if ! check_port_in_use "$p"; then
-                        echo "$p"
-                        break  # 找到一个未占用的端口，退出循环
-                    fi
-                done | head -n 1)
-                
-                if [[ -z "$port_to_delete" ]]; then
-                    echo -e "\e[1;3;31m没有可删除的未占用端口。\e[0m"
-                    return
-                fi
-                echo -e "\e[1;3;32m自动选择删除端口: $port_to_delete\e[0m"
-            fi
-
-            if echo "$port_list" | grep -q "^$port_to_delete "; then
-                local type=$(echo "$port_list" | grep "^$port_to_delete " | awk '{print $2}')
-                if ! check_port_in_use "$port_to_delete"; then
-                    local rt=$(devil port del "$type" "$port_to_delete" 2>&1)
-                    if [[ "$rt" =~ "successfully" ]]; then
-                        echo -e "\e[1;3;31m已成功删除端口: $port_to_delete\e[0m"
-                    else
-                        echo -e "\e[1;3;31m正在检测面板开放的端口，并重新分配.....\e[0m"
-                    fi
-                else
-                    echo -e "\e[1;3;33m端口 $port_to_delete 被占用，无法删除。\e[0m"
-                fi
-                valid_input=true
-            else
-                echo -e "\e[1;3;31m输入的端口号无效或不在可删除的列表中，请重新输入。\e[0m"
-            fi
-        done
-        return
-    fi
-    
-    while read -r line; do
-        [[ -z "$line" ]] && continue
-        local port=$(echo "$line" | awk '{print $1}')
-        local type=$(echo "$line" | awk '{print $2}')
-
-        if [[ -n "$type" && -n "$port" ]]; then
-            echo "检查端口: $port"
-            echo "端口类型: $type"
-
-            if ! check_port_in_use "$port"; then
-                local rt=$(devil port del "$type" "$port" 2>&1)
-                echo -e "\e[1;32;3m已成功删除未占用的端口: $port\e[0m"
-
-                if [[ "$rt" =~ "successfully" ]]; then
-                    echo -e "\e[1;32;3m已成功删除未占用的端口: $port\e[0m"
-                else
-                    echo -e "\e[1;3;31m正在检测面板开放的端口，并重新分配.....\e[0m"
-                fi
-            else
-                echo "端口 $port 被占用，跳过删除。"
-            fi
-        else
-            echo "无效的端口或类型: $line"
-        fi
-    done <<< "$port_list"
-}
-    
-# 获取端口
-getPort() {
-  local type=$1
-  local opts=$2
-
-  local key="$type|$opts"
-  if [[ -n "${port_array["$key"]}" ]]; then
-    echo "${port_array["$key"]}"
-  else
-    rt=$(devil port add $type random $opts)
-    if [[ "$rt" =~ .*succesfully.*$ ]]; then
-      loadPort
-      if [[ $? -ne 0 ]]; then
-        return 1  # 如果 loadPort 返回未分配状态
-      fi
-      if [[ -n "${port_array["$key"]}" ]]; then
-        echo "${port_array["$key"]}"
-      else
-        return 1  # 仍然失败
-      fi
-    else
-      return 1  # 添加失败
-    fi    
-  fi
-}
-
-#随机分配端口
-randomPort() {
-    local type=$1
-    local opts=$2
-    local port=""
-
-    read -p "是否自动分配${opts}端口($type)？[y/n] [y]:" input
-    input=${input:-y}
-    if [[ "$input" == "y" ]]; then
-        port=$(getPort $type $opts)
-        if [[ "$port" == "failed" ]]; then
-            green "自动分配端口失败，使用默认端口：默认端口为 12345"
-            port=12345  # 设置一个默认端口
-        else
-            green "自动分配${opts}端口为:${port}"
-        fi
-    else
-       read -p "请输入${opts}端口($type):" port
-    fi
-
-    echo "$port"  # 返回端口
-}
-# 检查端口分配情况
-loadPort() {
-  output=$(devil port list)
-
-  port_array=()
-  local no_port_flag=false  # 添加标志变量
-  while read -r port typ opis; do
-      if [[ "$typ" == "Type" ]]; then
-          continue
-      fi
-      if [[ "$port" == "Brak" || "$port" == "No" ]]; then
-          if ! $no_port_flag; then
-              echo -e "\e[1;3;31m正在检测面板开放的端口，并重新分配.....\e[0m"  # 红色斜体加粗输出
-              sleep 1
-              no_port_flag=true  # 设置标志为 true
-          fi
-          return 0
-      fi
-      if [[ -n "$typ" ]]; then
-          opis=${opis:-""}
-          combined="${typ}|${opis}"
-          port_array["$combined"]="$port"
-      fi
-  done <<< "$output"
-
-  return 0
-}
-
-
-cleanPort() {
-  output=$(devil port list)
-  while read -r port typ opis; do
-      if [[ "$typ" == "Type" ]]; then
-          continue
-      fi
-      if [[ "$port" == "Brak" || "$port" == "No"  ]]; then
-          return 0
-      fi
-      if [[ -n "$typ" ]]; then
-         devil port del $typ $port  > /dev/null 2>&1
-      fi
-  done <<< "$output"
-  return 0
-}
-
-# 检查并处理端口分配和删除
-check_and_allocate_port() {
-     green() {
-         echo -e "\e[1;3;32m\e[1m\e[3m$1\e[0m"
-}
-    local protocol_name=$1
-    local protocol_type=$2
-    local port_var_name=$3  # 存储端口的变量名
-    local existing_port=$(getPort "$protocol_type" "$protocol_name")
-    local new_port=""
-
-    if [[ "$existing_port" != "failed" ]]; then
-        bold_italic_yellow "已分配的 $protocol_name $protocol_type 端口为 : $existing_port"
-        # 提示是否删除已有的端口
-        read -p "$(echo -e '\e[1;33;3m是否重新分配 '$protocol_name' 端口('$existing_port')？[y/n Enter默认: n]:\e[0m')" delete_input
-        delete_input=${delete_input:-n}
-   if [[ "$delete_input" == "y" ]]; then
-    # 尝试删除端口并判断是否成功
-    rt=$(devil port del "$protocol_type" "$existing_port" 2>&1)
-    if [[ "$rt" =~ "successfully" ]]; then
-        echo -e "\e[1;33m\e[3m已成功删除 $protocol_name 端口: $existing_port\e[0m"
-  
-        # 重新随机分配新端口
-        new_port=$(getPort "$protocol_type" "$protocol_name")
-        if [[ "$new_port" == "failed" ]]; then
-            new_port=12345  # 设置一个默认值
-        else
-            green "重新分配的 $protocol_name  $protocol_type端口为: $new_port"
-        fi
-    else
-        if ! devil port list | grep -q "$existing_port"; then
-            green "已成功删除 $protocol_name 端口: $existing_port "
-            loadPort  # 加载最新的端口信息
-            new_port=$(getPort "$protocol_type" "$protocol_name")
-            if [[ "$new_port" == "failed" ]]; then
-                new_port=12345  # 设置一个默认值
-            else
-                green "重新分配的 $protocol_name $protocol_type端口为: $new_port"
-            fi
-        else
-            red "删除 $protocol_name 端口失败: $existing_port"
-            new_port="$existing_port"  # 保留现有端口
-        fi
-    fi
-
-        else
-            new_port="$existing_port"
-        fi
-    else
-        # 如果没有分配的端口，随机分配一个
-        new_port=$(randomPort "$protocol_type" "$protocol_name")
-    fi
-
-    # 更新全局变量
-    eval "$port_var_name=\"$new_port\""
-}
-read_socks5_port() {
-       # 检查当前已分配的端口数量
-             local port_count=$(devil port list | awk 'NR>1 && NF' | wc -l)
-        # 如果已分配端口数量达到三个，调用删除未使用的端口函数
-       if devil port list | grep -q "socks5"; then
-       echo -e "\e[1;3;32m当前已存在未被使用 socks5 的端口\e[0m"
-    elif [[ "$port_count" -ge 3 ]]; then
-        delete_unused_port
-    fi
-    loadPort
-    check_and_allocate_port "socks5" "tcp" "socks5_port"
-    bold_italic_green "你的socks5 TCP 端口为: $socks5_port"
-    sleep 2
-}
-read_vless_port() {
-       # 检查当前已分配的端口数量
-            local port_count=$(devil port list | awk 'NR>1 && NF' | wc -l)
-        # 如果已分配端口数量达到三个，调用删除未使用的端口函数
-      if devil port list | grep -q "vless-reality"; then
-         echo -e "\e[1;3;32m当前已存在未被使用 vless-reality 的端口\e[0m"
-    elif [[ "$port_count" -ge 3 ]]; then
-        delete_unused_port
-    fi
-    loadPort
-    check_and_allocate_port "vless-reality" "tcp" "vless_port"
-    bold_italic_green "你的vless-reality TCP 端口为: $vless_port"
-    sleep 2
-}
-
-read_vmess_port() {
-       # 检查当前已分配的端口数量
-          local port_count=$(devil port list | awk 'NR>1 && NF' | wc -l)
-        # 如果已分配端口数量达到三个，调用删除未使用的端口函数
-     if devil port list | grep -q "vmess"; then
-       echo -e "\e[1;3;32m当前已存在未被使用 vmess 的端口\e[0m"
-    elif [[ "$port_count" -ge 3 ]]; then
-        delete_unused_port
-    fi
-    loadPort
-    check_and_allocate_port "vmess" "tcp" "vmess_port"
-    bold_italic_green "你的vmess TCP 端口为: $vmess_port"
-       sleep 2
-}
-
-read_hy2_port() {
-          # 检查当前已分配的端口数量
-         local port_count=$(devil port list | awk 'NR>1 && NF' | wc -l)
-        # 如果已分配端口数量达到三个，调用删除未使用的端口函数
-    if devil port list | grep -q "hysteria2"; then
-         echo -e "\e[1;3;32m当前已存在未被使用 hysteria2 的端口\e[0m"
-    elif [[ "$port_count" -ge 3 ]]; then
-        delete_unused_port
-    fi
-    loadPort
-    check_and_allocate_port "hysteria2" "udp" "hy2_port"
-    bold_italic_green "你的hysteria2 UDP 端口为: $hy2_port"
-     sleep 2
-}
-
-read_tuic_port() {
-        # 检查当前已分配的端口数量
-       local port_count=$(devil port list | awk 'NR>1 && NF' | wc -l)
-        # 如果已分配端口数量达到三个，调用删除未使用的端口函数
-    if devil port list | grep -q "Tuic"; then
-         echo -e "\e[1;3;32m当前已存在未被使用 Tuic 的端口\e[0m"
-    elif [[ "$port_count" -ge 3 ]]; then
-        delete_unused_port
-    fi
-    loadPort
-    check_and_allocate_port "Tuic" "udp" "tuic_port"
-    bold_italic_green "你的Tuic UDP 端口为: $tuic_port"
-     sleep 2
-}
-
-   
-read_nz_variables() {
-  if [ -n "$NEZHA_SERVER" ] && [ -n "$NEZHA_PORT" ] && [ -n "$NEZHA_KEY" ]; then
-      bold_italic_green "**_使用自定义变量哪吒运行哪吒探针_**"
-      return
-  else
-      reading "**_是否需要安装哪吒探针？【y/n】: _**" nz_choice
-      [[ -z $nz_choice ]] && return
-      [[ "$nz_choice" != "y" && "$nz_choice" != "Y" ]] && return
-      reading "**_请输入哪吒探针域名或ip：_**" NEZHA_SERVER
-      bold_italic_green "**_你的哪吒域名为: $NEZHA_SERVER_**"
-      reading "**_请输入哪吒探针端口（回车跳过默认使用5555）：_**" NEZHA_PORT
-      [[ -z $NEZHA_PORT ]] && NEZHA_PORT="5555"
-      bold_italic_green "**_你的哪吒端口为: $NEZHA_PORT_**"
-      reading "**_请输入哪吒探针密钥：_**" NEZHA_KEY
-      bold_italic_green "**_你的哪吒密钥为: $NEZHA_KEY_**"
-  fi
-}
-
-#固定argo隧道  
-argo_configure() {
-    if [[ "$INSTALL_VMESS" == "true" ]]; then
+    if (( ${#ips[@]} )); then
+        green "检测到以下可用IP地址："
+        i=1
+        for ip in "${ips[@]}"; do green "  [$i] $ip"; i=$((i + 1)); done
+        echo
         while true; do
-            reading "Y 固定Argo隧道 或者 N 使用临时隧道【y/n】(ENTER默认y):\c" argo_choice
-            # 处理用户输入
-            if [[ -z $argo_choice ]]; then
-                # 如果用户按回车键（即为空），默认选择'y'
-                argo_choice="y"
-                green "默认选择开启固定隧道功能，请稍后..."
-                sleep 3
-                break
-            elif [[ "$argo_choice" == "y" || "$argo_choice" == "Y" ]]; then
-                green "开启固定隧道功能，请稍后..."
-                sleep 3
-                break
-            elif [[ "$argo_choice" == "n" || "$argo_choice" == "N" ]]; then
-                sleep 1
-                echo -e "${BOLD}${ITALIC}\033[1;3;32m将使用临时隧道...\033[0m${RESET} \n${BOLD}${ITALIC}\033[1;3;31m注意: 临时隧道不稳定, 可能会出现不通，建议固定隧道！${RESET}"
-                sleep 3
-                break
+            ask choice "请选择一个IP (输入编号, 或直接按Enter随机选择, 或手动输入其他IP): "
+            if [[ -z $choice ]]; then
+                ip=${ips[RANDOM % ${#ips[@]}]}
+                green "已为您随机选择IP: $ip"; break
+            elif [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#ips[@]} )); then
+                ip=${ips[choice-1]}
+                green "您已选择IP: $ip"; break
+            elif [[ $choice =~ ^[A-Za-z0-9.:\[\]-]+$ ]]; then
+                ip=$choice
+                green "您已手动输入IP/域名: $ip"; break
             else
-                red "无效的选择，请输入 y 或 n 或直接按Enter键"
+                red "输入无效，请重新输入。"
             fi
         done
-
-        # 提示用户生成配置信息
-        echo -e "\033[1;3;33m请访问以下网站生成 Argo 固定隧道所需的Json配置信息。${RESET}"
-        echo ""
-        echo -e "${red}      https://fscarmen.cloudflare.now.cc/ ${reset}"
-        echo ""
-
-        if [[ "$argo_choice" == "y" || "$argo_choice" == "Y" ]]; then
-            while [[ -z $ARGO_DOMAIN ]]; do
-                reading "请输入 Argo 固定隧道域名: " ARGO_DOMAIN
-                if [[ -z $ARGO_DOMAIN ]]; then
-                    red "Argo 固定隧道域名不能为空，请重新输入。"
-                else
-                    green "你的 Argo 固定隧道域名为: $ARGO_DOMAIN"
-                fi
-            done
-            
-            while [[ -z $ARGO_AUTH ]]; do
-                reading "请输入 Argo 固定隧道密钥（Json 或 Token）: " ARGO_AUTH
-                if [[ -z $ARGO_AUTH ]]; then
-                    red "Argo 固定隧道密钥不能为空，请重新输入。"
-                else
-                    green "你的 Argo 固定隧道密钥为: $ARGO_AUTH"
-                fi
-            done
-            
-            echo -e "${red}注意：${purple}使用 token，需要在 Cloudflare 后台设置隧道端口和面板开放的 TCP 端口一致${RESET}"
-        else
-            green "选择使用临时隧道"
-            return
-        fi
-        
-        # 生成 tunnel.yml
-        if [[ $ARGO_AUTH =~ TunnelSecret ]]; then
-            echo "$ARGO_AUTH" > "$WORKDIR/tunnel.json" 2>"$WORKDIR/tunnel.json.error"
-            if [[ $? -ne 0 ]]; then
-                red "生成 tunnel.json 文件失败，请检查权限和路径"
-                cat "$WORKDIR/tunnel.json.error" 2>/dev/null
-                return
+    else
+        yellow "API未能找到未被墙的IP，将尝试其他备用方案..."
+        ip=$(netstat -i 2>/dev/null | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1 | head -n 1)
+        if [[ -z $ip ]]; then
+            echo "  -> 未找到netstat备用IP，正在获取服务器主IP..." >&2
+            ip=$(curl -s --max-time 5 https://api.ipify.org)
+            if [[ -z $ip ]]; then
+                local v6
+                v6=$(curl -s --max-time 5 ipv6.ip.sb)
+                [[ -n $v6 ]] && ip="[$v6]"
             fi
-            credentials_file="$WORKDIR/tunnel.json"
+        fi
+        if [[ -n $ip ]]; then
+            green "已自动选择备用IP: $ip"
         else
-            credentials_file="/dev/null"
+            red "致命错误：所有方法都无法获取IP地址！"
+            return 1
+        fi
+    fi
+    FINAL_IP=$ip
+    yellow "最终使用的IP地址是: ${FINAL_IP}"
+    sleep 1
+}
+
+# ------------------------------------------------------------------------------
+# 端口管理（devil）
+# ------------------------------------------------------------------------------
+port_in_use() {
+    sockstat -46 2>/dev/null | awk -v p="$1" '{n=split($6, a, ":"); if (n > 0 && a[n] == p) f=1} END {exit !f}'
+}
+
+load_ports() {
+    local out port typ desc
+    PORT_MAP=()
+    out=$(devil port list 2>/dev/null) || return 1
+    while read -r port typ desc; do
+        [[ $port =~ ^[0-9]+$ ]] || continue
+        PORT_MAP["$typ|$desc"]=$port
+    done <<< "$out"
+}
+
+count_ports() {
+    devil port list 2>/dev/null | awk '$1 ~ /^[0-9]+$/' | wc -l | tr -d ' '
+}
+
+delete_unused_port() {
+    local list port typ desc choice
+    list=$(devil port list 2>/dev/null | awk 'NR>1 && NF')
+    if [[ -z $list ]]; then echo "没有找到已分配的端口。"; return 0; fi
+
+    red "以下是可删除的端口(黄色代表占用该端口,不可删除!)："
+    while read -r port typ desc; do
+        [[ $port =~ ^[0-9]+$ ]] || continue
+        if port_in_use "$port"; then yellow "$port $typ $desc【已被占用】"
+        else green "$port $typ $desc【未被占用】"; fi
+    done <<< "$list"
+
+    while true; do
+        ask choice "请输入要删除的端口号（直接按Enter删除一个未占用的端口）: "
+        if [[ -z $choice ]]; then
+            while read -r port typ desc; do
+                [[ $port =~ ^[0-9]+$ ]] || continue
+                if ! port_in_use "$port"; then choice=$port; break; fi
+            done <<< "$list"
+            if [[ -z $choice ]]; then red "没有可删除的未占用端口。"; return 1; fi
+            green "自动选择删除端口: $choice"
         fi
 
-        cat > "$WORKDIR/tunnel.yml" <<EOF
-tunnel: $(cut -d\" -f12 <<< "$ARGO_AUTH")
+        typ=$(awk -v p="$choice" '$1 == p {print $2}' <<< "$list")
+        if [[ -z $typ ]]; then
+            red "输入的端口号无效或不在可删除的列表中，请重新输入。"
+            continue
+        fi
+        if port_in_use "$choice"; then
+            yellow "端口 $choice 被占用，无法删除。"
+            return 1
+        fi
+        devil port del "$typ" "$choice" >/dev/null 2>&1
+        if devil port list 2>/dev/null | awk -v p="$choice" '$1 == p {f=1} END {exit !f}'; then
+            red "删除端口失败: $choice"
+            return 1
+        fi
+        red "已成功删除端口: $choice"
+        return 0
+    done
+}
+
+# alloc_port 描述 协议(tcp|udp) 结果变量名
+alloc_port() {
+    local name=$1 proto=$2 var=$3 key="$2|$1" cur ans
+    load_ports
+    cur=${PORT_MAP[$key]:-}
+
+    if [[ -n $cur ]]; then
+        green "当前已存在 $name 的端口"
+        yellow "已分配的 $name $proto 端口为 : $cur"
+        ask ans "是否重新分配 $name 端口($cur)？[y/n Enter默认: n]: " n
+        if [[ $ans =~ ^[Yy]$ ]]; then
+            devil port del "$proto" "$cur" >/dev/null 2>&1
+            load_ports
+            if [[ -n ${PORT_MAP[$key]:-} ]]; then
+                red "删除 $name 端口失败: $cur"
+            else
+                yellow "已成功删除 $name 端口: $cur"
+                cur=""
+            fi
+        fi
+    fi
+
+    if [[ -z $cur ]]; then
+        if (( $(count_ports) >= 3 )); then
+            delete_unused_port || return 1
+        fi
+        red "正在检测面板开放的端口，并重新分配....."
+        devil port add "$proto" random "$name" >/dev/null 2>&1
+        load_ports
+        cur=${PORT_MAP[$key]:-}
+        if [[ -z $cur ]]; then
+            red "端口分配失败：$name ($proto)，请到面板检查端口配额。"
+            return 1
+        fi
+        green "自动分配 ${name} 端口为: ${cur}"
+    fi
+
+    printf -v "$var" '%s' "$cur"
+    green "你的 $name $proto 端口为: $cur"
+    sleep 1
+}
+
+# ------------------------------------------------------------------------------
+# 下载
+# ------------------------------------------------------------------------------
+# download_file URL 目标路径
+download_file() {
+    local url=$1 dest=$2 key tmp size sum exp
+    key=${url##*/}
+    tmp="$dest.part"
+    if ! curl -fL -sS --retry 3 --connect-timeout 15 -o "$tmp" "$url"; then
+        rm -f "$tmp"
+        red "下载失败，请检查网络连接: $url"
+        return 1
+    fi
+    size=$(stat -f%z "$tmp" 2>/dev/null || echo 0)
+    if (( size < 100000 )); then
+        rm -f "$tmp"
+        red "下载的文件异常（体积过小: ${size} 字节）: $url"
+        return 1
+    fi
+    sum=$(sha256 -q "$tmp" 2>/dev/null)
+    exp=${EXPECTED_SHA256[$key]:-}
+    if [[ -n $exp && $sum != "$exp" ]]; then
+        rm -f "$tmp"
+        red "sha256 校验失败: $key"
+        return 1
+    fi
+    [[ -z $exp ]] && yellow "$key sha256: $sum（未设置校验值，已跳过校验）"
+    mv "$tmp" "$dest"
+    chmod +x "$dest"
+}
+
+download_singbox() {
+    local arch web_url bot_url pair name url
+    arch=$(uname -m)
+    case $arch in
+        arm|arm64|aarch64) web_url="$GH_BASE/arm64-sb";    bot_url="$GH_BASE/arm64-bot13" ;;
+        amd64|x86_64|x86)  web_url="$GH_BASE/amd64-web";   bot_url="$GH_BASE/amd64-bot" ;;
+        *) red "Unsupported architecture: $arch"; return 1 ;;
+    esac
+
+    green "正在下载所需配置文件，请稍后......"
+    echo
+    sleep 1
+    for pair in "web|$web_url" "bot|$bot_url"; do
+        name=${pair%%|*}; url=${pair#*|}
+        if [[ -e $WORKDIR/$name ]]; then
+            yellow "所需配置文件已存在，无需下载！"
+            chmod +x "$WORKDIR/$name"
+        else
+            download_file "$url" "$WORKDIR/$name" || return 1
+            yellow "下载成功，配置文件已保存"
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Argo 隧道
+# ------------------------------------------------------------------------------
+argo_configure() {
+    local choice credentials_file tid=""
+    if [[ $INSTALL_VMESS != true ]]; then
+        green "没有选择 vmess 协议，暂停使用 Argo 固定隧道"
+        return 0
+    fi
+
+    while true; do
+        ask choice "Y 固定Argo隧道 或者 N 使用临时隧道【y/n】(ENTER默认y): " y
+        case $choice in
+            [Yy]) green "开启固定隧道功能，请稍后..."; sleep 2; break ;;
+            [Nn])
+                green "将使用临时隧道..."
+                red "注意: 临时隧道不稳定, 可能会出现不通，建议固定隧道！"
+                sleep 2
+                ARGO_DOMAIN=""; ARGO_AUTH=""
+                rm -f "$ARGO_CONF"
+                return 0 ;;
+            *) red "无效的选择，请输入 y 或 n 或直接按Enter键" ;;
+        esac
+    done
+
+    yellow "请访问以下网站生成 Argo 固定隧道所需的Json配置信息。"
+    echo
+    red "      https://fscarmen.cloudflare.now.cc/ "
+    echo
+
+    local new_domain new_auth
+    while true; do
+        ask new_domain "请输入 Argo 固定隧道域名${ARGO_DOMAIN:+ [回车沿用: $ARGO_DOMAIN]}: " "$ARGO_DOMAIN"
+        if [[ $new_domain =~ ^[A-Za-z0-9.-]+$ ]]; then break; fi
+        red "Argo 固定隧道域名为空或格式不正确，请重新输入。"
+    done
+    ARGO_DOMAIN=$new_domain
+    green "你的 Argo 固定隧道域名为: $ARGO_DOMAIN"
+
+    while true; do
+        ask new_auth "请输入 Argo 固定隧道密钥（Json 或 Token）${ARGO_AUTH:+ [回车沿用已保存的密钥]}: " "$ARGO_AUTH"
+        if [[ $new_auth =~ ^[A-Za-z0-9=_+/-]{120,250}$ || $new_auth == *TunnelSecret* ]]; then break; fi
+        red "密钥为空或格式不正确（应为 Token 或包含 TunnelSecret 的 Json），请重新输入。"
+    done
+    ARGO_AUTH=$new_auth
+
+    if [[ $ARGO_AUTH == *TunnelSecret* ]]; then
+        if ! ( umask 077; printf '%s' "$ARGO_AUTH" > "$WORKDIR/tunnel.json" ); then
+            red "生成 tunnel.json 文件失败，请检查权限和路径"
+            return 1
+        fi
+        credentials_file="$WORKDIR/tunnel.json"
+        tid=$(_json_get "$ARGO_AUTH" TunnelID)
+    else
+        credentials_file="/dev/null"
+        yellow "注意：使用 token，需要在 Cloudflare 后台设置隧道端口(${vmess_port})和面板开放的 TCP 端口一致"
+    fi
+
+    cat > "$WORKDIR/tunnel.yml" <<EOF
+tunnel: $tid
 credentials-file: $credentials_file
 protocol: http2
 
@@ -873,374 +530,208 @@ ingress:
       noTLSVerify: true
   - service: http_status:404
 EOF
-
-        if [[ $? -ne 0 ]]; then
-            red "生成 tunnel.yml 文件失败，请检查权限和路径"
-            return
-        fi
-    else
-        green "没有选择 vmess 协议，暂停使用 Argo 固定隧道"
-    fi
-}
-
-# 定义颜色
-YELLOW='\033[1;3;33m'
-NC='\033[0m' # No Color
-  GREEN='\033[1;3;32m'
-  bold_italic_yellow="\033[1;3;33m"
-bold_italic_purple="\033[1;3;35m"
-  bold_italic_purple1="\033[1;3;32m"
-RESET="\033[0m"
-  
-  # 删除所有端口
-  clear_all_ports() {
-    # 获取所有已分配的端口列表，包含端口号和类型
-    local port_list=$(devil port list | awk '{print $1, $2}')
-
-    # 检查是否有分配的端口
-    if [[ -z "$port_list" ]]; then
-        return  # 没有端口则直接返回
-    fi
-
-    # 遍历每一个端口并删除
-    echo "$port_list" | while read -r port type; do
-        if [[ -n "$port" && -n "$type" ]]; then
-            # 删除端口并静默处理所有输出
-            devil port del "$type" "$port" >/dev/null 2>&1
-        fi
-    done
-}
-start_service() {
-  if [ -f "$base_dir/.enabled_flag" ]; then
-    echo -e "\e[32;1;3m=== Enabled 已为你自动已开启===  \e[33;1;3m注意：第一次开启Enabled后，请重启服务器后生效，切记！！！\e[0m"
-    return
-  fi
-
-  devil binexec on > /dev/null 2>&1
-  if [ $? -eq 0 ]; then
-    echo -e "\e[32;1;3m=== Enabled 已为你自动已开启===  \e[33;1;3m注意：第一次开启Enabled后，请重启服务器后生效，切记！！！\e[0m"
-    touch "$base_dir/.enabled_flag"  # 创建标志文件
-  else
-    echo -e "\e[31m\e[3m\e[1mEnabled未开启，请尝试手动开启.\e[0m"  # 红色斜体加粗输出
-  fi
-}
-
-#安装sing-box
-install_singbox() {
-bold_italic_red='\033[1;3;31m'
-reset='\033[0m'
-    echo -e "${bold_italic_yellow}本脚本可以选择性安装四种协议 ${bold_italic_purple}(vless-reality||vmess||hysteria2||tuic)${RESET}"
-    echo -e "${bold_italic_yellow}注意：脚本全自动化交互安装,无需登陆面板 ${bold_italic_purple}<<端口会根据用户选择的协议来进行自动分配>>${RESET}"
-start_service
-
-  # 提示用户输入
-while true; do
-    echo -e "${bold_italic_yellow}确定继续安装吗?<ENTER默认安装>【y/n】${reset}:\c"
-    read -p "" choice
-    choice=${choice:-y}  # 如果没有输入，默认值为 y
-
-    if [[ "$choice" =~ ^[Yy]$ ]]; then
-   
-        break  # 如果输入是 y 或 Y，退出循环
-    elif [[ "$choice" =~ ^[Nn]$ ]]; then
-        echo -e "$(bold_italic_red "安装已取消")"
-        exit 0  # 如果输入是 n 或 N，取消安装并退出
-    else
-        echo -e "${bold_italic_red}无效输入，请重新输入！！！${reset}"
-    fi
-done
-
-    WORKDIR="$HOME/sbox"
-    mkdir -p "$WORKDIR"
-    cd "$WORKDIR"
-
-    CERT_PATH="${HOME}/sbox/cert.pem"
-    PRIVATE_KEY_PATH="${HOME}/sbox/private.key"
-# 显示选项函数
-display_options() {
-    echo -e "${GREEN}\033[1m\033[3m请选择需要安装的服务（请输入对应的序号）：${RESET}"
-    echo -e "${bold_italic_yellow}1: vless-reality${RESET}"
-    echo -e "${bold_italic_yellow}2: vmess${RESET}"
-    echo -e "${bold_italic_yellow}3: hysteria2${RESET}"
-    echo -e "${bold_italic_yellow}4: tuic${RESET}"
-    echo -e "${bold_italic_yellow}5: 安装两个协议${RESET}"
-    echo -e "${bold_italic_yellow}6: 安装三个协议${RESET}"
-    echo -e "${bold_italic_yellow}0: 退出安装${RESET}"
-}
-
-# 初始化安装选项
-INSTALL_VLESS="false"
-INSTALL_VMESS="false"
-INSTALL_HYSTERIA2="false"
-INSTALL_TUIC="false"
-
-# 循环直到获取有效输入
-while true; do
-    # 显示选项并读取用户选择
-    display_options
-    read -p "$(echo -e ${bold_italic_yellow}请输入你的选择${RESET}): " choices
-sleep 1
-    # 检查用户输入是否在有效范围内
-    if [[ -z "$choices" || ! "$choices" =~ ^[0-6]$ ]]; then
-        echo -e "${RED}\033[1m\033[1;3;31m输入错误，请输入有效的序号（范围为1-6）!${RESET}"
-        continue
-    fi
-# 处理退出选项
-    if [[ "$choices" == "0" ]]; then
-        echo -e "\033[1;31;3m已退出安装！\033[0m"
-        exit 0
-    fi
-    # 处理用户选择
-    if [[ "$choices" == "5" ]]; then
-        echo -e "${bold_italic_yellow}请选择要安装的两个协议（请输入对应的序号，用空格分隔）${RESET}"
-        read -p "$(echo -e ${bold_italic_yellow}请输入你的选择${RESET}): " choices
-        # 检查选择是否有效
-        if [[ -z "$choices" || ! "$choices" =~ ^[1-4\ ]+$ ]]; then
-            echo -e "${RED}\033[1m\033[1;3;31m输入错误，请输入有效的序号（范围为1-4）!${RESET}"
-            continue
-        fi
-    elif [[ "$choices" == "6" ]]; then
-        echo -e "${bold_italic_yellow}请选择要安装的三个协议（请输入对应的序号，用空格分隔）${RESET}"
-        read -p "$(echo -e ${bold_italic_yellow}请输入你的选择${RESET}): " choices
-        # 检查选择是否有效
-        if [[ -z "$choices" || ! "$choices" =~ ^[1-4\ ]+$ ]]; then
-            echo -e "${RED}\033[1m\033[1;3;31m输入错误，请输入有效的序号（范围为1-4）!${RESET}"
-            continue
-        fi
-    fi
-# 设置安装选项
-valid_choice=true
-# 检查用户是否输入内容
-if [[ -z "$choices" ]]; then
-    valid_choice=false
-else
-    for choice in $choices; do
-        if [[ "$choice" =~ ^[1-4]$ ]]; then
-            case "$choice" in
-                1) INSTALL_VLESS="true" ;;
-                2) INSTALL_VMESS="true" ;;
-                3) INSTALL_HYSTERIA2="true" ;;
-                4) INSTALL_TUIC="true" ;;
-            esac
-        else
-            valid_choice=false
-            break
-        fi
-    done
-fi
-
-# 如果所有选择都是有效的，则退出循环
-if $valid_choice; then
-    break
-else
-    echo -e "${RED}\033[1m\033[1;3;31m输入错误，请重新输入有效的序号（范围为1-4）!${RESET}"
-fi
-
-done
-
-    validate_port() {
-        local port=$1
-        if [[ ! $port =~ ^[0-9]+$ ]] || [ "$port" -lt 1000 ] || [ "$port" -gt 65535 ]; then
-            return 1
-        else
-            return 0
-        fi
-    }
-
-    prompt_port() {
-        local prompt_message=$1
-        local port_variable=$2
-
-        while true; do
-            read -p "$(echo -e "${RED}\033[1m\033[1;3;32m$prompt_message: ${RESET}")" port
-            if validate_port "$port"; then
-                eval "$port_variable=$port"
-                break
-            else
-                echo -e "${RED}\033[1m\033[1;3;31m无效的端口号，请输入1000到65535之间的数字。${RESET}"
-            fi
-        done
-    }
-
-    if [ "$INSTALL_VLESS" = "true" ]; then
-             read_vless_port  
-    fi
-
-    if [ "$INSTALL_VMESS" = "true" ]; then
-            read_vmess_port
-          echo -e "${bold_italic_yellow}是否使用Argo功能?<ENTER默认开启>【y/n】${RESET}:\c"
-        read -p "" argo_choice
-        argo_choice=${argo_choice:-y}  # 默认开启
-
-        if [[ "$argo_choice" == [Yy] ]]; then
-            argo_configure
-            ARGO_CONFIGURED=true
-        else
-        ARGO_CONFIGURED=false
-            echo -e "$(bold_italic_green "跳过Argo功能配置...")"
-          
-        fi      
-    fi
-
-    if [ "$INSTALL_HYSTERIA2" = "true" ]; then
-            read_hy2_port
-    fi
-
-    if [ "$INSTALL_TUIC" = "true" ]; then
-           read_tuic_port
-    fi
-echo ""
-    download_singbox && wait
-  echo ""  
-    get_ip # Make sure we have an IP before generating config
-    generate_config
-
-    if [ "$INSTALL_VLESS" = "true" ]; then
-        echo -e "$(echo -e "${GREEN}\033[1m\033[3m正在配置 VLESS，请稍后...${RESET}")"
-    fi
-
-    if [ "$INSTALL_VMESS" = "true" ]; then
-        echo -e "$(echo -e "${GREEN}\033[1m\033[3m正在配置 VMESS，请稍后...${RESET}")"
-    fi
-
-    if [ "$INSTALL_HYSTERIA2" = "true" ]; then
-        echo -e "$(echo -e "${GREEN}\033[1m\033[3m正在配置 Hysteria2，请稍后...${RESET}")"
-    fi
-
-    if [ "$INSTALL_TUIC" = "true" ]; then
-        echo -e "$(echo -e "${GREEN}\033[1m\033[3m正在配置 TUIC，请稍后...${RESET}")"
-    fi
-
-    # 运行 sing-box
-   run_sb && sleep 3
-    get_links
-    
-    # 仅在 Argo 配置存在时显示 ArgoDomain 信息
-    if [[ -n $ARGO_DOMAIN ]]; then
-        echo -e "\e[33;1;3m隧道域名: ${ARGO_DOMAIN}\e[0m"
-    fi
-
-    echo -e "$(bold_italic_purple "安装已完成！")"
-}
-
-    
-uninstall_singbox() {
-   
-    echo -e "$(bold_italic_purple "正在卸载 sing-box，请稍后...")"
-    read -p $'\033[1;3;38;5;220m确定要卸载吗? (ENTER默认:y)【y/n】:\033[0m ' choice
-    choice=${choice:-y}  # 默认值为 y
-
-    case "$choice" in
-        [Yy])
-            # 终止 sing-box 相关进程
-            for process in 'web' 'bot' 'npm'; do
-                pids=$(pgrep -f "$process" 2>/dev/null)
-                if [ -n "$pids" ]; then
-                    kill -9 $pids 2>/dev/null
-                    echo -e "$(bold_italic_purple "已终止 $process 进程。")"
-                fi
-            done
-
-            # 终止 Socks5 代理进程
-            if pgrep -x "socks5" > /dev/null; then
-                pkill -9 sosks5
-                echo -e "$(bold_italic_purple "已终止 Socks5 代理进程。")"
-            fi
-
-            # 删除下载目录
-            WORKDIR="$HOME/sbox"
-            if [ -d "$WORKDIR" ]; then
-                rm -rf "$WORKDIR" 2>/dev/null
-                echo -e "$(bold_italic_purple "已删除程序配置文件")"
-            fi
-
-            # 删除 Socks5 配置文件
-            SOCKS5_CONFIG="$WORKDIR/config.json"
-            if [ -f "$SOCKS5_CONFIG" ]; then
-                rm -f "$SOCKS5_CONFIG" 2>/dev/null
-                echo -e "$(bold_italic_purple "已删除 Socks5 配置文件")"
-            fi
-
-            echo -e "$(bold_italic_purple "正在卸载......")"
-            sleep 3
-              cleanup_delete
-            # 可选：暂停片刻让用户看到消息
-            echo -e "$(bold_italic_purple "卸载完成！")"
-            ;;
-      
-        [Nn])
-            echo -e "$(bold_italic_purple "已取消卸载。")"
-            exit 0
-            ;;
-        *)
-            echo -e "$(bold_italic_red "无效的选择，请输入 y 或 n")"
-            menu
-            ;;
-    esac
-}
-
-# Download Dependency Files
-download_singbox() {
-    ARCH=$(uname -m) && DOWNLOAD_DIR="$HOME/sbox" && mkdir -p "$DOWNLOAD_DIR" && FILE_INFO=()
-    
-     if [ "$ARCH" == "arm" ] || [ "$ARCH" == "arm64" ] || [ "$ARCH" == "aarch64" ]; then
-          FILE_INFO=("https://github.com/yyfalbl/singbox-2/releases/download/v1.0.0/arm64-sb web" "https://github.com/yyfalbl/singbox-2/releases/download/v1.0.0/arm64-bot13 bot")
-     
-  elif [ "$ARCH" == "amd64" ] || [ "$ARCH" == "x86_64" ] || [ "$ARCH" == "x86" ]; then
-     
-FILE_INFO=("https://github.com/yyfalbl/singbox-2/releases/download/v1.0.0/amd64-web web" "https://github.com/yyfalbl/singbox-2/releases/download/v1.0.0/amd64-bot bot")
-     
-  else
-      echo "Unsupported architecture: $ARCH"
-      exit 1
-  fi
-  
-echo -e "\e[1;3;32m正在下载所需配置文件，请稍后......\e[0m"
-echo ""
-  sleep 2
-
-    for entry in "${FILE_INFO[@]}"; do
-        URL=$(echo "$entry" | cut -d ' ' -f 1)
-        NEW_FILENAME=$(echo "$entry" | cut -d ' ' -f 2)
-        FILENAME="$DOWNLOAD_DIR/$NEW_FILENAME"
-        
-        if [ -e "$FILENAME" ]; then
-             echo -e "\e[1;3;33m所需配置文件已存在，无需下载！\e[0m"
-        else
-            wget -q -O "$FILENAME" "$URL"
-           echo -e "$(bold_italic_yellow "下载成功，配置文件已保存")"        
-        fi
-        
-        chmod +x $FILENAME
-    done
-}
- # Define color codes
-YELLOW="\033[1;3;33m"
-RESET="\033[0m"
- 
- # 使用当前用户的主目录定义默认路径
-CERT_PATH="${HOME}/sbox/cert.pem"
-PRIVATE_KEY_PATH="${HOME}/sbox/private.key"
-
-# 配置文件生成函数
-generate_config() {
-    # 生成现实密钥对
-    output=$(./web generate reality-keypair)
-    private_key=$(echo "${output}" | awk '/PrivateKey:/ {print $2}')
-    public_key=$(echo "${output}" | awk '/PublicKey:/ {print $2}')
-
-    # 生成TLS证书和密钥
-    openssl ecparam -genkey -name prime256v1 -out "$WORKDIR/private.key"
-    openssl req -new -x509 -days 3650 -key "$WORKDIR/private.key" -out "$WORKDIR/cert.pem" -subj "/CN=$HOSTNAME"
-
-    # 确保用户提供了端口号
-    if [ -z "$vless_port" ] && [ -z "$vmess_port" ] && [ -z "$hy2_port" ] && [ -z "$tuic_port" ]; then
-        echo "Error: No port number provided. Configuration file will not be generated."
+    if [[ $? -ne 0 ]]; then
+        red "生成 tunnel.yml 文件失败，请检查权限和路径"
         return 1
     fi
-    
-    # 基于所选服务创建配置文件模板
-    cat > "$WORKDIR/config.template.json" <<EOF
+    save_argo_conf
+}
+
+build_bot_args() {
+    local vp=${1:-8080}
+    if [[ $ARGO_AUTH =~ ^[A-Za-z0-9=_+/-]{120,250}$ ]]; then
+        BOT_ARGS=(tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --token "$ARGO_AUTH")
+    elif [[ $ARGO_AUTH == *TunnelSecret* ]]; then
+        BOT_ARGS=(tunnel --edge-ip-version auto --config "$WORKDIR/tunnel.yml" run)
+    else
+        BOT_ARGS=(tunnel --edge-ip-version auto --no-autoupdate --protocol http2
+                  --logfile "$WORKDIR/boot.log" --loglevel info --url "http://localhost:$vp")
+    fi
+}
+
+start_bot() {
+    local vp
+    if [[ ! -e $WORKDIR/bot ]]; then
+        green "没有找到 bot 文件，无法启动 bot 进程。"
+        return 1
+    fi
+    chmod +x "$WORKDIR/bot"
+    stop_proc bot >/dev/null
+    vp=${vmess_port:-$(config_vmess_port)}
+    build_bot_args "${vp:-8080}"
+    [[ -z $ARGO_AUTH ]] && rm -f "$WORKDIR/boot.log"
+    nohup "$WORKDIR/bot" "${BOT_ARGS[@]}" >/dev/null 2>&1 </dev/null &
+    sleep 2
+    if proc_running bot; then
+        green "BOT进程启动成功, 并正在运行！"
+    else
+        red "bot进程启动失败，请检查配置或日志以获取更多信息。"
+        return 1
+    fi
+}
+
+get_argodomain() {
+    local i d
+    if [[ -n $ARGO_AUTH ]]; then echo "$ARGO_DOMAIN"; return; fi
+    for ((i = 0; i < 20; i++)); do
+        d=$(grep -oE 'https://[[:alnum:].-]+\.trycloudflare\.com' "$WORKDIR/boot.log" 2>/dev/null |
+            tail -n 1 | sed 's#https://##')
+        if [[ -n $d ]]; then echo "$d"; return; fi
+        sleep 1
+    done
+}
+
+# ------------------------------------------------------------------------------
+# 服务启停
+# ------------------------------------------------------------------------------
+start_service() {
+    if [[ -f $base_dir/.enabled_flag ]]; then
+        printf '%s=== Enabled 已为你自动已开启===  注意：第一次开启Enabled后，请重启服务器后生效，切记！！！%s\n' "$C_G" "$C_0"
+        return
+    fi
+    if devil binexec on >/dev/null 2>&1; then
+        printf '%s=== Enabled 已为你自动已开启===  注意：第一次开启Enabled后，请重启服务器后生效，切记！！！%s\n' "$C_G" "$C_0"
+        touch "$base_dir/.enabled_flag"
+    else
+        red "Enabled未开启，请尝试手动开启."
+    fi
+}
+
+start_npm() {
+    local tls=()
+    [[ -e $WORKDIR/npm ]] || return 0
+    if [[ -n $NEZHA_SERVER && -n $NEZHA_PORT && -n $NEZHA_KEY ]]; then
+        case " 443 8443 2096 2087 2083 2053 " in *" $NEZHA_PORT "*) tls=(--tls) ;; esac
+        stop_proc npm >/dev/null
+        TMPDIR=$WORKDIR nohup "$WORKDIR/npm" -s "${NEZHA_SERVER}:${NEZHA_PORT}" -p "${NEZHA_KEY}" "${tls[@]}" \
+            >/dev/null 2>&1 </dev/null &
+        sleep 2
+        proc_running npm && green "npm is running" || red "npm is not running"
+    else
+        purple "NEZHA variable is empty, skipping running"
+    fi
+}
+
+start_web_proc() {
+    local out
+    if [[ ! -e $WORKDIR/web ]]; then
+        red "web可执行文件未找到，请检查路径是否正确。"
+        return 1
+    fi
+    chmod +x "$WORKDIR/web"
+    stop_proc web >/dev/null
+    if ! out=$("$WORKDIR/web" check -c "$WORKDIR/config.json" 2>&1); then
+        red "配置文件检查失败："
+        echo "$out"
+        return 1
+    fi
+    nohup "$WORKDIR/web" run -c "$WORKDIR/config.json" >"$WORKDIR/web.log" 2>&1 </dev/null &
+    sleep 2
+    if proc_running web; then
+        green "WEB进程启动成功,并正在运行！"
+    else
+        red "web进程启动失败，请重试。最近日志："
+        tail -n 10 "$WORKDIR/web.log" 2>/dev/null
+        return 1
+    fi
+}
+
+run_sb() {
+    start_npm
+    start_web_proc || return 1
+    if [[ $ARGO_CONFIGURED == true ]]; then start_bot; fi
+    return 0
+}
+
+vmess_link() {   # 名称 地址 端口 host tls sni
+    local json
+    json=$(printf '{ "v": "2", "ps": "%s", "add": "%s", "port": "%s", "id": "%s", "aid": "0", "scy": "none", "net": "ws", "type": "none", "host": "%s", "path": "/vmess?ed=2048", "tls": "%s", "sni": "%s", "alpn": "", "fp": ""}' \
+        "$1" "$2" "$3" "$UUID" "$4" "$5" "$6")
+    printf 'vmess://%s' "$(printf '%s' "$json" | b64)"
+}
+
+# 菜单 6：启动服务
+start_web() {
+    local argodomain node_name="${USERNAME}-${SUBDOMAIN}"
+    red "正在启动sing-box服务,请稍后......"
+    sleep 1
+    start_web_proc
+
+    if [[ -n $ARGO_AUTH ]] || config_has_vmess; then
+        if start_bot; then
+            if [[ -n $ARGO_AUTH ]]; then
+                green "=== Argo固定隧道功能已开启 ==="
+            elif config_has_vmess; then
+                green "===Argo临时隧道功能已开启==="
+                yellow "正在等待临时隧道域名..."
+                argodomain=$(get_argodomain)
+                if [[ -n $argodomain ]]; then
+                    echo
+                    red "以下为新vmess开启隧道功能链接，替换www.visa.com.tw为自己的优选ip可获得极致体验"
+                    printf '%s%s%s\n\n' "$C_Y" \
+                        "$(vmess_link "$node_name" "$CFIP" "$CFPORT" "$argodomain" tls "$argodomain")" "$C_0"
+                else
+                    red "未能获取临时隧道域名，请稍后查看 $WORKDIR/boot.log"
+                fi
+            fi
+        fi
+    else
+        red "===Argo隧道未开启==="
+    fi
+}
+
+# 菜单 7：停止所有服务
+stop_web() {
+    local item label
+    yellow "正在清理 web 和 bot 进程，请稍后......"
+    sleep 1
+    for item in "web|WEB" "bot|BOT" "npm|NPM" "socks5|SOCKS5"; do
+        label=${item#*|}
+        if stop_proc "${item%%|*}"; then
+            red "已成功停止 $label 进程!"
+        else
+            red "未找到$label进程，可能已经停止了!"
+        fi
+    done
+    sleep 1
+}
+
+# ------------------------------------------------------------------------------
+# 配置生成
+# ------------------------------------------------------------------------------
+_cfg_emit() { printf '%s' "$_CFG_SEP" >> "$_CFG_FILE"; cat >> "$_CFG_FILE"; _CFG_SEP=$',\n'; }
+
+generate_config() {
+    local out private_key="" cert="$WORKDIR/cert.pem" key="$WORKDIR/private.key"
+    REALITY_PUB=""
+
+    if [[ -z "${vless_port}${vmess_port}${hy2_port}${tuic_port}" ]]; then
+        red "Error: No port number provided. Configuration file will not be generated."
+        return 1
+    fi
+
+    if [[ $INSTALL_VLESS == true ]]; then
+        out=$("$WORKDIR/web" generate reality-keypair 2>&1)
+        private_key=$(awk '/PrivateKey:/ {print $2}' <<< "$out")
+        REALITY_PUB=$(awk '/PublicKey:/ {print $2}' <<< "$out")
+        if [[ -z $private_key || -z $REALITY_PUB ]]; then
+            red "生成 Reality 密钥失败: $out"
+            return 1
+        fi
+    fi
+
+    if [[ $INSTALL_HYSTERIA2 == true || $INSTALL_TUIC == true ]]; then
+        if ! { openssl ecparam -genkey -name prime256v1 -out "$key" 2>/dev/null &&
+               openssl req -new -x509 -days 3650 -key "$key" -out "$cert" -subj "/CN=$(hostname)" 2>/dev/null; }; then
+            red "生成 TLS 证书失败"
+            return 1
+        fi
+        chmod 600 "$key"
+    fi
+
+    _CFG_FILE="$WORKDIR/config.template.json"
+    _CFG_SEP=""
+    cat > "$_CFG_FILE" <<EOF
 {
   "log": {
     "disabled": false,
@@ -1271,12 +762,8 @@ generate_config() {
   "inbounds": [
 EOF
 
-    # 跟踪是否添加了任何服务
-    service_added=false
-
-    # 如果选择，则附加VLESS配置
-    if [ "$INSTALL_VLESS" = "true" ]; then
-        cat >> "$WORKDIR/config.template.json" <<EOF
+    if [[ $INSTALL_VLESS == true ]]; then
+        _cfg_emit <<EOF
     {
       "tag": "vless-reality-version",
       "type": "vless",
@@ -1303,13 +790,10 @@ EOF
       }
     }
 EOF
-        service_added=true
     fi
 
-    # Append VMESS configuration if selected
-    if [ "$INSTALL_VMESS" = "true" ]; then
-        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.template.json"
-        cat >> "$WORKDIR/config.template.json" <<EOF
+    if [[ $INSTALL_VMESS == true ]]; then
+        _cfg_emit <<EOF
     {
       "tag": "vmess-ws-in",
       "type": "vmess",
@@ -1327,13 +811,10 @@ EOF
       }
     }
 EOF
-        service_added=true
     fi
 
-    # Append Hysteria2 configuration if selected
-    if [ "$INSTALL_HYSTERIA2" = "true" ]; then
-        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.template.json"
-        cat >> "$WORKDIR/config.template.json" <<EOF
+    if [[ $INSTALL_HYSTERIA2 == true ]]; then
+        _cfg_emit <<EOF
     {
       "tag": "hysteria-in",
       "type": "hysteria2",
@@ -1348,18 +829,15 @@ EOF
       "tls": {
         "enabled": true,
         "alpn": ["h3"],
-        "certificate_path": "$CERT_PATH",
-        "key_path": "$PRIVATE_KEY_PATH"
+        "certificate_path": "$cert",
+        "key_path": "$key"
       }
     }
 EOF
-        service_added=true
     fi
 
-    # Append TUIC configuration if selected
-    if [ "$INSTALL_TUIC" = "true" ]; then
-        [ "$service_added" = true ] && echo "," >> "$WORKDIR/config.template.json"
-        cat >> "$WORKDIR/config.template.json" <<EOF
+    if [[ $INSTALL_TUIC == true ]]; then
+        _cfg_emit <<EOF
     {
       "tag": "tuic-in",
       "type": "tuic",
@@ -1368,22 +846,22 @@ EOF
       "users": [
         {
           "uuid": "$UUID",
-          "password": "admin123"
+          "password": "$TUIC_PASS"
         }
       ],
       "congestion_control": "bbr",
       "tls": {
         "enabled": true,
         "alpn": ["h3"],
-        "certificate_path": "$CERT_PATH",
-        "key_path": "$PRIVATE_KEY_PATH"
+        "certificate_path": "$cert",
+        "key_path": "$key"
       }
     }
 EOF
     fi
 
-    # 继续写入配置的其余部分
-    cat >> "$WORKDIR/config.template.json" <<EOF
+    cat >> "$_CFG_FILE" <<EOF
+
   ],
   "outbounds": [
     {
@@ -1406,13 +884,13 @@ EOF
       "server": "engage.cloudflareclient.com",
       "server_port": 2408,
       "local_address": [
-        "172.16.0.2/32",
-        "2606:4700:110:812a:4929:7d2a:af62:351c/128"
+        "$WG_ADDR_V4",
+        "$WG_ADDR_V6"
       ],
-      "private_key": "gBthRjevHDGyV0KvYwYE52NIPy29sSrVr6rcQtYNcXA=",
-      "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+      "private_key": "$WG_PRIVATE_KEY",
+      "peer_public_key": "$WG_PEER_PUBLIC_KEY",
       "mtu": 1420,
-      "reserved": [6, 146, 6]
+      "reserved": [$WG_RESERVED]
     },
     {
       "type": "direct",
@@ -1500,738 +978,556 @@ EOF
   }
 }
 EOF
-    
-    # 从模板生成初始的配置文件，并保存当前IP状态
-    sed "s/__IP_ADDRESS__/${FINAL_IP}/g" "$WORKDIR/config.template.json" > "$WORKDIR/config.json"
-    echo "$FINAL_IP" > "$base_dir/current_active_ip.txt"
+
+    [[ -f $WORKDIR/config.json ]] && cp "$WORKDIR/config.json" "$WORKDIR/config.json.bak"
+    sed "s/__IP_ADDRESS__/${FINAL_IP}/g" "$_CFG_FILE" > "$WORKDIR/config.json"
+    chmod 600 "$WORKDIR/config.json" "$_CFG_FILE"
+    printf '%s\n' "$FINAL_IP" > "$base_dir/current_active_ip.txt"
     green "配置文件模板和初始配置文件已生成。"
     green "当前活动IP ${FINAL_IP} 已被记录。"
 }
 
+# 生成节点链接：list.txt 里只写纯文本，不带颜色码
+get_links() {
+    local argodomain="" node_name="${USERNAME}-${SUBDOMAIN}"
 
-# 启动服务的函数
-run_sb() {
-  green() {
-    echo -e "\e[32;3;1m$1\e[0m"
-  }
-
-  # 启动 npm
-  if [ -e "$WORKDIR/npm" ]; then
-    tlsPorts=("443" "8443" "2096" "2087" "2083" "2053")
-    if [[ "${tlsPorts[*]}" =~ "${NEZHA_PORT}" ]]; then
-      NEZHA_TLS="--tls"
-    else
-      NEZHA_TLS=""
+    if [[ $ARGO_CONFIGURED == true ]]; then
+        yellow "正在获取隧道域名..."
+        argodomain=$(get_argodomain)
+        printf '%sArgoDomain:%s%s%s\n\n' "$C_G" "$C_P" "$argodomain" "$C_0"
     fi
-    if [ -n "$NEZHA_SERVER" ] && [ -n "$NEZHA_PORT" ] && [ -n "$NEZHA_KEY" ]; then
-      export TMPDIR=$(pwd)
-      nohup "$WORKDIR/npm" -s ${NEZHA_SERVER}:${NEZHA_PORT} -p ${NEZHA_KEY} ${NEZHA_TLS} >/dev/null 2>&1 &
-      sleep 2
-      pgrep -x "npm" > /dev/null && green "npm is running" || { red "npm is not running, restarting..."; pkill -x "npm" && nohup "$WORKDIR/npm" -s "${NEZHA_SERVER}:${NEZHA_PORT}" -p "${NEZHA_KEY}" ${NEZHA_TLS} >/dev/null 2>&1 & sleep 2; purple "npm restarted"; }
+    sleep 1
+
+    if [[ $ARGO_CONFIGURED == true && -n $ARGO_AUTH ]]; then
+        green "=== Argo固定隧道功能已开启 ==="
+    elif [[ $ARGO_CONFIGURED == true && -n $argodomain ]]; then
+        green "===Argo临时隧道功能已开启==="
     else
-      purple "NEZHA variable is empty, skipping running"
+        red "===Argo隧道功能未开启==="
     fi
-  fi
 
-  # 启动 web
-  if [ -e "$WORKDIR/web" ]; then
-    nohup "$WORKDIR/web" run -c "$WORKDIR/config.json" >/dev/null 2>&1 &
-    sleep 2
-    pgrep -x "web" > /dev/null && green "WEB is running" || { red "web is not running, restarting..."; pkill -x "web" && nohup "$WORKDIR/web" run -c "$WORKDIR/config.json" >/dev/null 2>&1 & sleep 2; purple "web restarted"; }
-  fi
+    [[ $FQDN == *.serv00.com ]] && green "当前服务器的地址是：$FQDN"
+    echo
+    red "注意：v2ray或其他软件的跳过证书验证需设置为true, 否则hy2或tuic节点可能不通"
+    echo
 
-  # 启动 bot
-  if [ -e "$WORKDIR/bot" ]; then
-    # 如果 ARGO_AUTH 是一个有效的 Token 格式
-    if [[ $ARGO_AUTH =~ ^[A-Z0-9a-z=]{120,250}$ ]]; then
-      args="${args:-tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --token ${ARGO_AUTH}}"
-    # 如果 ARGO_AUTH 包含 TunnelSecret 字符串，表示可能是一个 JSON 格式的配置
-    elif [[ $ARGO_AUTH =~ TunnelSecret ]]; then
-      args="${args:-tunnel --edge-ip-version auto --config $WORKDIR/tunnel.yml run}"
-    # 如果 ARGO_AUTH 是有效的 JSON 格式（检查是否以 '{' 开头并包含 '}' 结尾）
-    elif [[ $ARGO_AUTH =~ ^\{.*\}$ ]]; then
-      args="${args:-tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --json ${ARGO_AUTH}}"
-    else
-      # 默认配置，使用 http2 协议和本地转发
-      if [[ -n "$vmess_port" ]]; then
-      args="${args:-tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile $WORKDIR/boot.log --loglevel info --url http://localhost:$vmess_port}"
-    else
-      args="${args:-tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile $WORKDIR/boot.log --loglevel info --url http://localhost:8080}"
-    fi
- fi
+    {
+        if [[ $INSTALL_VLESS == true ]]; then
+            echo "以下为vless客户端通用链接"
+            echo
+            echo "vless://$UUID@$FINAL_IP:$vless_port/?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.ups.com&fp=chrome&pbk=$REALITY_PUB&type=tcp&headerType=none#$node_name"
+            echo
+        fi
+        if [[ $INSTALL_VMESS == true ]]; then
+            echo "以下为vmess客户端通用链接"
+            echo
+            vmess_link "$node_name" "$FINAL_IP" "$vmess_port" "" "" ""; echo
+            echo
+            if [[ $ARGO_CONFIGURED == true && -n $argodomain ]]; then
+                echo "以下为vmess开启隧道功能链接，替换$CFIP为自己的优选ip可获得极致体验"
+                echo
+                vmess_link "$node_name" "$CFIP" "$CFPORT" "$argodomain" tls "$argodomain"; echo
+                echo
+            fi
+        fi
+        if [[ $INSTALL_HYSTERIA2 == true ]]; then
+            echo "以下为HYSTERIA2客户端通用链接"
+            echo
+            echo "hysteria2://$UUID@$FINAL_IP:$hy2_port/?sni=www.bing.com&alpn=h3&insecure=1#$node_name"
+            echo
+        fi
+        if [[ $INSTALL_TUIC == true ]]; then
+            echo "以下为TUIC客户端通用链接"
+            echo
+            echo "tuic://$UUID:$TUIC_PASS@$FINAL_IP:$tuic_port?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#$node_name"
+            echo
+        fi
+    } > "$WORKDIR/list.txt"
+    chmod 600 "$WORKDIR/list.txt"
 
-    # 启动 bot 进程
-  nohup $WORKDIR/bot $args >/dev/null 2>&1 &
-    sleep 2
-    pgrep -x "bot" > /dev/null && green "BOT is running" || { red "bot is not running, restarting..."; pkill -x "bot" && nohup $WORKDIR/bot "${args}" >/dev/null 2>&1 & sleep 2; purple "bot restarted"; }
-   
-  fi
-#  echo "$WORKDIR/bot $args"
-} 
+    printf '%s' "$C_Y"; cat "$WORKDIR/list.txt"; printf '%s' "$C_0"
+    green "节点信息已保存"
+    green "Running done!"
+}
 
-#更换ip函数
-getUnblockIP2() {
-    # 获取当前主机名
-    local hostname=$(hostname)
-    # 提取主机编号
-    local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
-    # 构建要检测的主机数组
-    local hosts=("$hostname" "web${host_number}.serv00.com" "cache${host_number}.serv00.com")
-    local unblock_ips=()
-    local ip_regex="^[0-9]{1,3}(\.[0-9]{1,3}){3}$"
+# ------------------------------------------------------------------------------
+# 安装 sing-box
+# ------------------------------------------------------------------------------
+display_options() {
+    green "请选择需要安装的服务（请输入对应的序号）："
+    yellow "1: vless-reality"
+    yellow "2: vmess"
+    yellow "3: hysteria2"
+    yellow "4: tuic"
+    yellow "5: 安装两个协议"
+    yellow "6: 安装三个协议"
+    yellow "0: 退出安装"
+}
 
-    # 循环检测
-    for host in "${hosts[@]}"; do
-        local response
-        # 使用你的新 API
-        response=$(curl -sk --fail "https://2670819.xyz/api.php?host=$host") || continue
-        if [[ -z "$response" ]]; then
+# 返回 1 表示用户选择退出
+select_protocols() {
+    local choices want c list seen
+    INSTALL_VLESS=false; INSTALL_VMESS=false; INSTALL_HYSTERIA2=false; INSTALL_TUIC=false
+    while true; do
+        display_options
+        ask choices "请输入你的选择: "
+        sleep 1
+        if [[ ! $choices =~ ^[0-6]$ ]]; then
+            red "输入错误，请输入有效的序号（范围为0-6）!"
             continue
         fi
-
-        # 【关键修改】：不再依赖 jq，使用 grep 和 cut 解析 JSON
-        local ip=$(echo "$response" | grep '"host"' | cut -d '"' -f 4)
-        local status=$(echo "$response" | grep '"status"' | cut -d '"' -f 4)
-
-        if [[ "$status" == "Accessible" && "$ip" =~ $ip_regex ]]; then
-            unblock_ips+=("$ip")
+        if [[ $choices == 0 ]]; then
+            red "已退出安装！"
+            return 1
         fi
-    done
 
-    if [[ ${#unblock_ips[@]} -eq 0 ]]; then
-        return
-    fi
+        want=1
+        case $choices in
+            5) want=2; yellow "请选择要安装的两个协议（请输入对应的序号，用空格分隔）"; ask choices "请输入你的选择: " ;;
+            6) want=3; yellow "请选择要安装的三个协议（请输入对应的序号，用空格分隔）"; ask choices "请输入你的选择: " ;;
+        esac
 
-    # 只输出可用 IP 列表供 get_ip 函数处理
-    echo "${unblock_ips[@]}"
-}
-get_ip() {
-    # 确保颜色变量可用
-    local GREEN_BOLD_ITALIC="\033[1;3;32m"
-    
-    echo -e "${bold_italic_yellow}正在自动检测所有可用的IP地址... (这可能需要几秒钟)${reset}"
-    
-    # 调用函数，其过程输出已被隐藏
-    local unblock_ips=($(getUnblockIP2))
-    local IP=""
-    
-    if [[ ${#unblock_ips[@]} -gt 0 ]]; then
-        # 使用绿色斜体加粗的颜色代码
-        echo -e "${GREEN_BOLD_ITALIC}检测到以下可用IP地址：${reset}"
-        
-        local i=1
-        for ip in "${unblock_ips[@]}"; do
-            # 同样应用颜色代码
-            echo -e "  ${GREEN_BOLD_ITALIC}[$i] $ip${reset}"
-            i=$((i + 1))
+        list=(); seen=" "
+        for c in $choices; do
+            if [[ ! $c =~ ^[1-4]$ ]]; then list=(); break; fi
+            [[ $seen == *" $c "* ]] && continue
+            seen+="$c "
+            list+=("$c")
         done
-        
-        echo ""
-        
-        read -p "$(echo -e "${bold_italic_yellow}请选择一个IP (输入编号, 或直接按Enter随机选择, 或手动输入其他IP): ${reset}")" choice
-        
-        if [[ -z "$choice" ]]; then
-            IP=${unblock_ips[$((RANDOM % ${#unblock_ips[@]}))]}
-            echo -e "\033[1;3;32m已为您随机选择IP: $IP\033[0m"
-        
-        elif [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#unblock_ips[@]} ]]; then
-            IP=${unblock_ips[$((choice - 1))]}
-            echo -e "\033[1;3;32m您已选择IP: $IP\033[0m"
-            
-        else
-            IP="$choice"
-            echo -e "${bold_italic_green}您已手动输入IP/域名: $IP${reset}"
+        if (( ${#list[@]} != want )); then
+            red "输入错误，请输入 $want 个不重复的有效序号（范围为1-4）!"
+            continue
         fi
-
-    else
-        echo -e "${bold_italic_yellow}API未能找到未被墙的IP，将尝试其他备用方案...${reset}"
-        
-        IP=$(netstat -i | awk '/^ixl.*mail[0-9]+/ {print $3}' | cut -d '/' -f 1)
-        
-        if [[ -z "$IP" ]]; then
-            echo "  -> 未找到netstat备用IP，正在获取服务器主IP..." >&2
-            IP=$(curl -s https://api.ipify.org || { ipv6=$(curl -s --max-time 1 ipv6.ip.sb); echo "[$ipv6]"; })
-        fi
-        
-        if [[ -n "$IP" ]]; then
-            echo -e "${bold_italic_green}已自动选择备用IP: $IP${reset}"
-        else
-            echo -e "${bold_italic_red}致命错误：所有方法都无法获取IP地址！${reset}"
-            exit 1
-        fi
-    fi
-
-    FINAL_IP="$IP"
-    echo -e "${bold_italic_yellow}最终使用的IP地址是: ${FINAL_IP}${reset}"
-    sleep 1
-}
-
-#获取临时或固定隧道域名
-get_argodomain() {
-  if [[ -n $ARGO_AUTH ]]; then
-    echo "$ARGO_DOMAIN"
-  else
-    local retry=0
-    local max_retries=6
-    local argodomain=""
-    while [[ $retry -lt $max_retries ]]; do
-      ((retry++))
-      argodomain=$(grep -oE 'https://[[:alnum:]+\.-]+\.trycloudflare\.com' boot.log | sed 's@https://@@') 
-      if [[ -n $argodomain ]]; then
-        break
-      fi
-      sleep 1
+        for c in "${list[@]}"; do
+            case $c in
+                1) INSTALL_VLESS=true ;;
+                2) INSTALL_VMESS=true ;;
+                3) INSTALL_HYSTERIA2=true ;;
+                4) INSTALL_TUIC=true ;;
+            esac
+        done
+        return 0
     done
-    echo "$argodomain"
-  fi
 }
-#生成客户端通用链接
-get_links() {
-  
-     purple() {
-        echo -e "\\033[1;3;35m$*\\033[0m"
-    }
-# 假设 argo_configure 函数会设置某个标志变量
-if [ "$ARGO_CONFIGURED" = true ]; then
-    argodomain=$(get_argodomain)
-    echo -e "\e[1;3;32mArgoDomain:\e[1;3;35m${argodomain}\e[0m\n"
-fi
-sleep 2
 
-# 检查 Argo 隧道是否开启
-# 检查args中是否包含临时隧道配置
-if [[ "$args" == *"--url http://localhost:$vmess_port"* && -n "$argodomain" ]]; then
-    # 如果args包含临时隧道的配置，表示开启了Argo临时隧道
-    green "===Argo临时隧道功能已开启==="
-elif grep -q "tunnel:" "$WORKDIR/tunnel.yml" 2>/dev/null; then
-    # 检查tunnel.yml文件中是否有tunnel配置，表示Argo隧道开启
-    green "=== Argo固定隧道功能已开启 ==="
-else
-    red "===Argo隧道功能未开启==="
-fi
+install_singbox() {
+    local choice argo_choice
+    printf '%s本脚本可以选择性安装四种协议 %s(vless-reality||vmess||hysteria2||tuic)%s\n' "$C_Y" "$C_P" "$C_0"
+    printf '%s注意：脚本全自动化交互安装,无需登陆面板 %s<<端口会根据用户选择的协议来进行自动分配>>%s\n' "$C_Y" "$C_P" "$C_0"
+    start_service
 
-      
-current_fqdn=$(hostname -f)
+    while true; do
+        ask choice "确定继续安装吗?<ENTER默认安装>【y/n】: " y
+        if [[ $choice =~ ^[Yy]$ ]]; then break
+        elif [[ $choice =~ ^[Nn]$ ]]; then red "安装已取消"; return 0
+        else red "无效输入，请重新输入！！！"; fi
+    done
 
-# 检查域名是否以 serv00.com 结尾
-if [[ "$current_fqdn" == *.serv00.com ]]; then
-echo -e "${GREEN_BOLD_ITALIC}当前服务器的地址是：$current_fqdn${RESET}"
-   # echo "该服务器属于 serv00.com 域"
+    mkdir -p "$WORKDIR"
+    cd "$WORKDIR" || { red "无法进入 $WORKDIR"; return 1; }
 
-    # 提取子域名（假设子域名在主域名前缀的第一部分）
-    subdomain=${current_fqdn%%.*}    
-  fi  
-    
-    # 获取用户名信息
-      USERNAME=$(whoami)
-   echo ""
-    sleep 3
-  printf "${RED}${BOLD_ITALIC}注意：v2ray或其他软件的跳过证书验证需设置为true, 否则hy2或tuic节点可能不通${RESET}\n"
-     echo ""
-      sleep 3
-    # 生成并保存配置文件
-cat <<EOF > "$WORKDIR/list.txt"
-$(if [ "$INSTALL_VLESS" = "true" ]; then
-     echo -e "\033[1;32;3m以下为vless客户端通用链接\033[0m"
-     printf "\n"  
-     printf "${YELLOW}\033[1mvless://$UUID@$FINAL_IP:$vless_port/?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.ups.com&fp=chrome&pbk=$public_key&type=tcp&headerType=none#${USERNAME}-${subdomain}${RESET}\n"
-fi)
+    select_protocols || return 0
 
-$(if [ "$INSTALL_VMESS" = "true" ]; then
-    # 生成不带 argodomain 的链接
-    echo -e "\033[1;32;3m以下为vmess客户端通用链接\033[0m"
-    printf "\n"
-    printf "${YELLOW}\033[1mvmess://$(echo "{ \"v\": \"2\", \"ps\": \"${USERNAME}-${subdomain}\", \"add\": \"$FINAL_IP\", \"port\": \"$vmess_port\", \"id\": \"$UUID\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"\", \"path\": \"/vmess?ed=2048\", \"tls\": \"\", \"sni\": \"\", \"alpn\": \"\", \"fp\": \"\"}" | base64 -w0)${RESET}\n"
-   echo ""
-    # 如果 ARGO_CONFIGURED 为 true，生成带 argodomain 的链接
-    if [ "$ARGO_CONFIGURED" = true ]; then
-        echo -e "\033[1;32;3m以下为vmess开启隧道功能链接，替换www.visa.com.tw为自己的优选ip可获得极致体验\033[0m"
-        printf "\n"
-        printf "${YELLOW}\033[1mvmess://$(echo "{ \"v\": \"2\", \"ps\": \"${USERNAME}-${subdomain}\", \"add\": \"$CFIP\", \"port\": \"$CFPORT\", \"id\": \"$UUID\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"$argodomain\", \"path\": \"/vmess?ed=2048\", \"tls\": \"tls\", \"sni\": \"$argodomain\", \"alpn\": \"\", \"fp\": \"\"}" | base64 -w0)${RESET}\n"
+    vless_port=""; vmess_port=""; hy2_port=""; tuic_port=""
+    ARGO_CONFIGURED=false
+
+    if [[ $INSTALL_VLESS == true ]]; then
+        alloc_port "vless-reality" tcp vless_port || return 1
     fi
-fi)
-
-$(if [ "$INSTALL_HYSTERIA2" = "true" ]; then
-     echo -e "\033[1;32;3m以下为HYSTERIA2客户端通用链接\033[0m"
-     printf "\n"
-    printf "${YELLOW}\033[1mhysteria2://$UUID@$FINAL_IP:$hy2_port/?sni=www.bing.com&alpn=h3&insecure=1#${USERNAME}-${subdomain}${RESET}\n"
-fi)
-
-$(if [ "$INSTALL_TUIC" = "true" ]; then
-     echo -e "\033[1;32;3m以下为TUIC客户端通用链接\033[0m"
-     printf "\n"
-    printf "${YELLOW}\033[1mtuic://$UUID:admin123@$FINAL_IP:$tuic_port?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#${USERNAME}-${subdomain}${RESET}\n"
-fi)
-
-$(if [ "$INSTALL_SOCKS5" = "true" ]; then
-    printf "${YELLOW}\033[1mSocks5 代理地址： $FINAL_IP:$SOCKS5_PORT 用户名：$SOCKS5_USER 密码：$SOCKS5_PASS${RESET}\n"
-    printf "${YELLOW}\033[1msocks://${SOCKS5_USER}:${SOCKS5_PASS}@${SERV_DOMAIN}:${SOCKS5_PORT}${RESET}\n"
-fi)
-  
-EOF
-  echo ""
-# 显示生成的 list.txt 内容
-cat "$WORKDIR/list.txt"
-green "节点信息已保存"
-green "Running done!"
-
-# 清理临时文件
-sleep 3
-rm -rf "$WORKDIR/core"
-}
-    
-# 定义颜色函数
-green() { echo -e "\e[1;32m$1\033[0m"; }
-red() { echo -e "\e[1;91m$1\033[0m"; }
-purple() { echo -e "\e[1;35m$1\033[0m"; }
-reading() { read -p "$(red "$1")" "$2"; }
-
-# 启动 web和bot 函数    
-
-start_web() {
-    green() {
-        echo -e "\\033[1;3;32m$*\\033[0m"
-    }
-
-    red() {
-        echo -e "\\033[1;3;31m$*\\033[0m"
-    }
-
-    purple() {
-        echo -e "\\033[1;3;35m$*\\033[0m"
-    }
-
-    # 保存光标位置
-    echo -n -e "\033[1;3;31m正在启动sing-box服务,请稍后......\033[0m\n"
-    sleep 1  # 可选：在启动进程前稍作停顿
-
-    # 启动 web 进程
-    if [ -e "$WORKDIR/web" ]; then
-        chmod +x "$WORKDIR/web"
-        
-        # 启动 web 进程
-        nohup "$WORKDIR/web" run -c "$WORKDIR/config.json" >"$WORKDIR/web.log" 2>&1 &
-        sleep 2
-
-        # 检查 web 进程是否启动成功
-        if pgrep -x "web" > /dev/null; then
-            # 清除初始消息，换行
-            echo -ne "\r\033[K"
-            green "WEB进程启动成功,并正在运行！"
+    if [[ $INSTALL_VMESS == true ]]; then
+        alloc_port "vmess" tcp vmess_port || return 1
+        ask argo_choice "是否使用Argo功能?<ENTER默认开启>【y/n】: " y
+        if [[ $argo_choice =~ ^[Yy]$ ]]; then
+            argo_configure || return 1
+            ARGO_CONFIGURED=true
         else
-            # 清除初始消息，换行
-            echo -ne "\r\033[K"
-            red "web进程启动失败，请重试。检查日志以获取更多信息。"
-        #    echo "查看日志文件以获取详细信息: $WORKDIR/web.log"
+            ARGO_DOMAIN=""; ARGO_AUTH=""
+            rm -f "$ARGO_CONF"
+            green "跳过Argo功能配置..."
         fi
-    else
-        # 清除初始消息，换行
-        echo -ne "\r\033[K"
-        red "web可执行文件未找到，请检查路径是否正确。"
+    fi
+    if [[ $INSTALL_HYSTERIA2 == true ]]; then
+        alloc_port "hysteria2" udp hy2_port || return 1
+    fi
+    if [[ $INSTALL_TUIC == true ]]; then
+        alloc_port "Tuic" udp tuic_port || return 1
     fi
 
-  # 启动 bot 进程
-if [ -e "$WORKDIR/bot" ]; then
-  # 设置 args 参数
-  if [[ $ARGO_AUTH =~ ^[A-Z0-9a-z=]{120,250}$ ]]; then
-    args="${args:-tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --token ${ARGO_AUTH}}"
-  elif [[ $ARGO_AUTH =~ TunnelSecret ]]; then
-    args="${args:-tunnel --edge-ip-version auto --config $WORKDIR/tunnel.yml run}"
-  elif [[ $ARGO_AUTH =~ ^\{.*\}$ ]]; then
-    args="${args:-tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --json ${ARGO_AUTH}}"
-  else
-    # 默认使用本地转发配置，判断是否设置了 vmess_port
-if [[ -f "$WORKDIR/boot.log" ]]; then
-   # 提取第一个域名和端口号
-   argodomain=$(grep -oE 'https://[a-zA-Z0-9\.-]+\.trycloudflare\.com' "$WORKDIR/boot.log" | tail -n 1 | sed 's/https:\/\///')
-   vmess_port=$(grep -oE 'localhost:([0-9]+)' "$WORKDIR/boot.log" | tail -n 1 | sed 's/localhost://')
-    # 如果同时提取到域名和端口号
-    if [[ -n "$argodomain" && -n "$vmess_port" ]]; then
-        # 使用提取的域名和端口
-        args="${args:-tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile $WORKDIR/boot.log --loglevel info --url http://localhost:$vmess_port --hostname $argodomain}"
+    echo
+    download_singbox || return 1
+    echo
+    get_ip || return 1
+    generate_config || return 1
+
+    [[ $INSTALL_VLESS == true ]]     && green "正在配置 VLESS，请稍后..."
+    [[ $INSTALL_VMESS == true ]]     && green "正在配置 VMESS，请稍后..."
+    [[ $INSTALL_HYSTERIA2 == true ]] && green "正在配置 Hysteria2，请稍后..."
+    [[ $INSTALL_TUIC == true ]]      && green "正在配置 TUIC，请稍后..."
+
+    run_sb || { red "服务启动失败，安装中止。"; return 1; }
+    sleep 2
+    get_links
+
+    [[ -n $ARGO_DOMAIN ]] && printf '%s隧道域名: %s%s\n' "$C_Y" "$ARGO_DOMAIN" "$C_0"
+    purple "安装已完成！"
+}
+
+# ------------------------------------------------------------------------------
+# Socks5
+# ------------------------------------------------------------------------------
+setup_socks5() {
+    local ans user_port s5_user s5_pass again IP socks_bin="$WORKDIR/socks5"
+    local socks_url="$GH_BASE/socks5"
+
+    ask ans "是否安装 Socks5 代理？(Y/N 回车N) " n
+    if [[ ! $ans =~ ^[Yy]$ ]]; then
+        yellow "已取消安装 Socks5 代理。"
+        return 0
+    fi
+    mkdir -p "$WORKDIR"
+
+    get_ip || return 1
+    IP=$FINAL_IP
+    yellow "设备的IP地址是: ${IP}"
+    yellow "本机域名是: ${SERV_DOMAIN}"
+
+    ask user_port "请输入 socks5 端口,按下ENTER自动检测 (面板开放的TCP端口): "
+    if [[ $user_port =~ ^[0-9]+$ ]] && (( user_port >= 1 && user_port <= 65535 )); then
+        socks5_port=$user_port
+        yellow "使用手动指定的端口: $socks5_port（请确认该端口已在面板开放）"
     else
-        args="${args:-tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile $WORKDIR/boot.log --loglevel info --url http://localhost:8080}"
+        [[ -n $user_port ]] && red "端口输入无效，改为自动检测。"
+        alloc_port "socks5" tcp socks5_port || return 1
     fi
 
-fi
-
- fi
- 
- # 获取节点别名
-  current_fqdn=$(hostname -f)
-  USERNAME=$(whoami)
-# 检查域名是否以 serv00.com 结尾
-if [[ "$current_fqdn" == *.serv00.com ]]; then
-    # 提取子域名（假设子域名在主域名前缀的第一部分）
-    subdomain=${current_fqdn%%.*}    
-  fi  
-      
-  # 启动 bot 进程
-  nohup $WORKDIR/bot $args >/dev/null 2>&1 &
-  sleep 2
-
-  # 检查 bot 是否启动成功
-  if pgrep -x "bot" > /dev/null; then
-      green "BOT进程启动成功, 并正在运行！"
-    
-      # 检查 Argo 隧道是否开启
-      if [[ "$args" == *"--url http://localhost:$vmess_port"* ]]; then
-          # 如果 args 包含临时隧道的配置，表示开启了 Argo 临时隧道
-          green "===Argo临时隧道功能已开启==="
-          echo ""
-# 只有 config.json 中确实配置了 VMess，才输出 VMess 链接
-if [[ -f "$WORKDIR/config.json" ]] &&
-   grep -qE '"type"[[:space:]]*:[[:space:]]*"vmess"' "$WORKDIR/config.json"; then
-
-    echo -n -e "\033[1;3;31m以下为新vmess开启隧道功能链接，替换www.visa.com.tw为自己的优选ip可获得极致体验\033[0m\n"
-
-    printf "${YELLOW}\033[1mvmess://$(echo "{ \"v\": \"2\", \"ps\": \"${USERNAME}-${subdomain}\", \"add\": \"$CFIP\", \"port\": \"$CFPORT\", \"id\": \"$UUID\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"$argodomain\", \"path\": \"/vmess\", \"tls\": \"tls\", \"sni\": \"$argodomain\", \"alpn\": \"\", \"fp\": \"\"}" | base64 -w0)${RESET}\n"
-
-    echo ""
-else
-    # 如果未检测到 VMess 配置，智能询问用户是否临时生成
-    read -p "$(echo -e "\033[1;3;33m检测到未配置 VMess，是否临时生成一个隧道链接？(y/N 默认不生成): \033[0m")" gen_vmess
-    gen_vmess=${gen_vmess:-n}
-    
-    if [[ "$gen_vmess" =~ ^[Yy]$ ]]; then
-        echo -n -e "\033[1;3;31m以下为您临时生成的 vmess 开启隧道功能链接...\033[0m\n"
-        
-        printf "${YELLOW}\033[1mvmess://$(echo "{ \"v\": \"2\", \"ps\": \"${USERNAME}-${subdomain}\", \"add\": \"$CFIP\", \"port\": \"$CFPORT\", \"id\": \"$UUID\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"$argodomain\", \"path\": \"/vmess\", \"tls\": \"tls\", \"sni\": \"$argodomain\", \"alpn\": \"\", \"fp\": \"\"}" | base64 -w0)${RESET}\n"
-        
-        echo ""
-    else
-        echo -e "\033[1;3;32m已跳过生成 VMess 隧道链接。\033[0m"
-    fi
-fi
-    elif grep -q "tunnel:" "$WORKDIR/tunnel.yml" 2>/dev/null; then
-          # 检查 tunnel.yml 文件中是否有 tunnel 配置，表示 Argo 隧道开启
-          green "=== Argo固定隧道功能已开启 ==="
-      else
-          red "===Argo隧道未开启==="
-      fi
-  else
-      red "bot进程启动失败，请检查日志以获取更多信息。"
-  fi
-else
-  green "没有找到 bot 文件，无法启动 bot 进程。"
-fi
-
-}
-    
-#停止sing-box服务
-stop_web() {
-    echo -n -e "\033[1;3;33m正在清理 web 和 bot 进程，请稍后......\033[0m\n"
-    sleep 1  # Optional: pause for a brief moment before killing tasks
-
-    # 查找 web 进程的 PID
-    WEB_PID=$(pgrep -f 'web')
-
-    if [ -n "$WEB_PID" ]; then
-        # 杀死 web 进程
-        kill -9 $WEB_PID
-        echo -n -e "\033[1;3;31m已成功停止 WEB 进程!\033[0m\n"
-    else
-        echo -n -e "\033[1;3;31m未找到WEB进程，可能已经停止了!\033[0m\n"
+    ask s5_user "请输入 socks5 用户名（按回车生成随机用户名）: "
+    if [[ -z $s5_user ]]; then
+        s5_user=$(rand_str 6)
+        yellow "随机生成的 socks5 用户名是: ${s5_user}"
     fi
 
-    # 查找 bot 进程的 PID
-    BOT_PID=$(pgrep -f 'bot')
+    while true; do
+        ask s5_pass "请输入 socks5 密码（按回车生成随机密码，不能包含@和:）: "
+        if [[ -z $s5_pass ]]; then
+            s5_pass=$(rand_str 10)
+            yellow "随机生成的 socks5 密码是: ${s5_pass}"
+            break
+        elif [[ $s5_pass == *@* || $s5_pass == *:* ]]; then
+            red "密码不能包含 @ 和 :，请重新输入。"
+        else
+            break
+        fi
+    done
 
-    if [ -n "$BOT_PID" ]; then
-        # 杀死 bot 进程
-        kill -9 $BOT_PID
-           echo -n -e "\033[1;3;31m已成功停止 BOT 进程!\033[0m\n"
+    yellow "创建配置文件: ${WORKDIR}/socks.json"
+    ( umask 077; cat > "$WORKDIR/socks.json" <<EOF
+{
+  "log": {
+    "access": "/dev/null",
+    "error": "/dev/null",
+    "loglevel": "none"
+  },
+  "inbounds": [
+    {
+      "port": "$socks5_port",
+      "protocol": "socks",
+      "tag": "socks",
+      "settings": {
+        "auth": "password",
+        "udp": false,
+        "ip": "0.0.0.0",
+        "userLevel": 0,
+        "accounts": [
+          {
+            "user": "$s5_user",
+            "pass": "$s5_pass"
+          }
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    }
+  ]
+}
+EOF
+    )
+
+    if [[ ! -e $socks_bin ]]; then
+        yellow "下载 socks5 程序..."
+        download_file "$socks_url" "$socks_bin" || return 1
     else
-         echo -n -e "\033[1;3;31m未找到BOT进程，可能已经停止了!\033[0m\n"
+        ask again "socks5 程序已存在，是否重新下载？(Y/N 回车N): " n
+        if [[ $again =~ ^[Yy]$ ]]; then
+            yellow "重新下载 socks5 程序..."
+            stop_proc socks5 >/dev/null
+            rm -f "$socks_bin"
+            download_file "$socks_url" "$socks_bin" || return 1
+        fi
     fi
 
-    sleep 2  # Optional: pause to allow the user to see the message before exiting
-}
-    
-# 检查 sing-box 是否已安装
-is_singbox_installed() {
-    if [ -e "$WORKDIR/web" ]; then
-        echo "web 文件存在"
+    chmod +x "$socks_bin"
+    stop_proc socks5 >/dev/null
+    nohup "$socks_bin" -c "$WORKDIR/socks.json" >/dev/null 2>&1 </dev/null &
+    sleep 1
+
+    if proc_running socks5; then
+        green "Socks5 代理程序启动成功"
+        yellow "Socks5 代理地址： $IP:$socks5_port 用户名：$s5_user 密码：$s5_pass"
+        echo
+        yellow "socks://${s5_user}:${s5_pass}@${SERV_DOMAIN}:${socks5_port}"
+        {
+            echo "Socks5 代理地址： $IP:$socks5_port 用户名：$s5_user 密码：$s5_pass"
+            echo
+            echo "socks://${s5_user}:${s5_pass}@${SERV_DOMAIN}:${socks5_port}"
+            echo
+        } > "$WORKDIR/socks5.txt"
+        chmod 600 "$WORKDIR/socks5.txt"
+        echo
     else
-        echo "web 文件不存在"
+        red "Socks5 代理程序启动失败"
     fi
-    if [ -e "$WORKDIR/npm" ]; then
-        echo "npm 文件存在"
-    else
-        echo "npm 文件不存在"
-    fi
-    [ -e "$WORKDIR/web" ] || [ -e "$WORKDIR/npm" ]
-}
-# 终止所有进程
-manage_processes() {
-  # Define color codes
-  RED_BOLD='\033[1;3;31m'
-  RESET='\033[0m'
-    RED_BOLD='\033[1;3;31m'
-  YELLOW='\033[1;3;33m'
-  RESET='\033[0m'
-  
-  # 获取当前用户名
-  USERNAME=$(whoami)
-  
-  echo -e "${RED_BOLD}请选择要执行的操作:${RESET}"
-  echo -e "${RED_BOLD}1. 清理所有进程,可能会断开ssh连接${RESET}"
-  echo -e "${RED_BOLD}2. 只清理当前用户的进程${RESET}"
-  echo ""
-printf "${YELLOW}输入选择 (1 或 2): ${RESET}"
-  read -r choice
-echo ""
-  case $choice in
-    1)
-      if pkill -kill -u "$USERNAME"; then
-        echo -e "${RED_BOLD}正在清理系统所有进程,请稍后......${RESET}"
-    sleep 3
-      else
-        echo -e "${RED_BOLD}清理进程失败。请检查是否有足够的权限或进程是否存在。${RESET}"
-      fi
-      ;;
-    2)
-      if pkill -u "$USERNAME"; then
-        echo -e "${RED_BOLD}正在清理当前用户进程,请稍后......${RESET}"
-        echo ""
-      else
-        echo -e "${RED_BOLD}清理进程失败。请检查是否有足够的权限或进程是否存在。${RESET}"
-      fi
-      ;;
-    *)
-      echo -e "${RED_BOLD}无效的选择。${RESET}"
-      ;;
-  esac
-
-  sleep 3  # Optional: pause to allow the user to see the message before exiting
-}
-# 定义颜色函数
-red() {
-    echo -e "\\033[1;3;31m$*\\033[0m"
 }
 
-green() {
-    echo -e "\\033[1;32m$*\\033[0m"
-}
-
-yellow() {
-    echo -e "\\033[1;33m$*\\033[0m"
-}
-
-purple() {
-    echo -e "\\033[1;35m$*\\033[0m"
-}
-reading() {
-    echo -ne "\\033[1;3;33m$1\\033[0m"  # 显示黄色加粗斜体的提示
-    read -r input  # 暂时存储用户输入
-    eval "$2=\$input"  # 将用户输入的内容赋值给指定的变量
-}
-    magenta() {
-    echo -e "\033[1;3;33m$1\033[0m"
-}
-bold_italic_orange() {
-    echo -e "\033[1;3;38;5;208m$1\033[0m"
-}
-    pink() {
-    echo -e "\033[1;35m$1\033[0m"
-}
-    bold_italic_light_blue() {
-    echo -e "\033[1;3;36m$1\033[0m"
-}    
-
-# 更换/更新可用IP的函数
+# ------------------------------------------------------------------------------
+# 更换 IP
+# ------------------------------------------------------------------------------
 change_ip() {
-    # 检查sing-box是否已安装，以及必要文件是否存在
-    if [ ! -f "$WORKDIR/config.template.json" ] || [ ! -f "$base_dir/current_active_ip.txt" ]; then
+    local old_ip new_ip="" ips=() ip i choice old_re
+    if [[ ! -f $WORKDIR/config.template.json || ! -f $base_dir/current_active_ip.txt ]]; then
         red "错误：sing-box未安装或配置文件不完整，无法更换IP。"
         red "请先执行安装流程。"
-        return
+        return 1
     fi
 
-    local old_ip=$(cat "$base_dir/current_active_ip.txt")
-    echo -e "${bold_italic_yellow}当前正在使用的IP是: ${old_ip}${reset}"
-    
-    echo -e "${bold_italic_yellow}正在自动检测所有可用的IP地址...${reset}"
-    
-    local unblock_ips=($(getUnblockIP2))
-    local new_ip=""
-    
-    if [[ ${#unblock_ips[@]} -gt 0 ]]; then
-        local GREEN_BOLD_ITALIC="\033[1;3;32m"
-        echo -e "${GREEN_BOLD_ITALIC}检测到以下可用IP地址：${reset}"
-        
-        local i=1
-        for ip in "${unblock_ips[@]}"; do
-            echo -e "  ${GREEN_BOLD_ITALIC}[$i] $ip${reset}"
-            i=$((i + 1))
-        done
-        echo ""
-        
-        read -p "$(echo -e "${bold_italic_yellow}请选择一个新IP (输入编号, 或直接按Enter随机选择): ${reset}")" choice
-        
-        if [[ -z "$choice" ]]; then
-            new_ip=${unblock_ips[$((RANDOM % ${#unblock_ips[@]}))]}
-            echo -e "${bold_italic_green}已为您随机选择新IP: $new_ip${reset}"
-        elif [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#unblock_ips[@]} ]]; then
-            new_ip=${unblock_ips[$((choice - 1))]}
-            echo -e "\033[1;3;32m您已选择新IP: $new_ip\033[0m"
-        else
-            red "无效输入，操作已取消。"
-            return
-        fi
-    else
+    old_ip=$(<"$base_dir/current_active_ip.txt")
+    yellow "当前正在使用的IP是: ${old_ip}"
+    yellow "正在自动检测所有可用的IP地址..."
+    mapfile -t ips < <(fetch_unblock_ips)
+
+    if (( ${#ips[@]} == 0 )); then
         red "未能检测到任何可用的IP地址，无法更换。请稍后重试。"
-        return
+        return 1
     fi
 
-    if [[ "$new_ip" == "$old_ip" ]]; then
+    green "检测到以下可用IP地址："
+    i=1
+    for ip in "${ips[@]}"; do green "  [$i] $ip"; i=$((i + 1)); done
+    echo
+    ask choice "请选择一个新IP (输入编号, 或直接按Enter随机选择): "
+    if [[ -z $choice ]]; then
+        new_ip=${ips[RANDOM % ${#ips[@]}]}
+        green "已为您随机选择新IP: $new_ip"
+    elif [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#ips[@]} )); then
+        new_ip=${ips[choice-1]}
+        green "您已选择新IP: $new_ip"
+    else
+        red "无效输入，操作已取消。"
+        return 1
+    fi
+
+    if [[ $new_ip == "$old_ip" ]]; then
         green "您选择的IP与当前IP相同，无需更改。"
-        return
+        return 0
     fi
 
-    # 【关键美化】对以下状态信息应用紫色斜体加粗格式
-    bold_italic_purple "--> 正在更新核心配置文件..."
+    purple "--> 正在更新核心配置文件..."
+    [[ -f $WORKDIR/config.json ]] && cp "$WORKDIR/config.json" "$WORKDIR/config.json.bak"
     sed "s/__IP_ADDRESS__/${new_ip}/g" "$WORKDIR/config.template.json" > "$WORKDIR/config.json"
-    
-    bold_italic_purple "--> 正在更新节点链接..."
-    sed -i '' "s#${old_ip}#${new_ip}#g" "$WORKDIR/list.txt"
+    chmod 600 "$WORKDIR/config.json"
 
-    bold_italic_purple "--> 正在更新当前IP状态记录..."
-    echo "$new_ip" > "$base_dir/current_active_ip.txt"
-    
-    bold_italic_purple "--> 正在重启sing-box服务以应用新IP..."
-    pkill -f "$WORKDIR/web"
-    sleep 2
-    nohup "$WORKDIR/web" run -c "$WORKDIR/config.json" >/dev/null 2>&1 &
-    
-    if pgrep -f "$WORKDIR/web" > /dev/null; then
-       echo -e "\033[1;3;32m服务重启成功！IP已成功更换为: ${new_ip}\033[0m"
-        echo ""
-        bold_italic_purple "以下是更新后的节点信息："
-        
-        if [ -f "$WORKDIR/list.txt" ]; then
-            cat "$WORKDIR/list.txt"
+    purple "--> 正在更新节点链接..."
+    if [[ -f $WORKDIR/list.txt ]]; then
+        old_re=${old_ip//./\\.}
+        sed "s#${old_re}#${new_ip}#g" "$WORKDIR/list.txt" > "$WORKDIR/list.txt.new" &&
+            mv "$WORKDIR/list.txt.new" "$WORKDIR/list.txt"
+    fi
+
+    purple "--> 正在更新当前IP状态记录..."
+    printf '%s\n' "$new_ip" > "$base_dir/current_active_ip.txt"
+    SERVER_INFO_CACHE=""
+
+    purple "--> 正在重启sing-box服务以应用新IP..."
+    if start_web_proc; then
+        green "服务重启成功！IP已成功更换为: ${new_ip}"
+        echo
+        purple "以下是更新后的节点信息："
+        if [[ -f $WORKDIR/list.txt ]]; then
+            printf '%s' "$C_Y"; cat "$WORKDIR/list.txt"; printf '%s' "$C_0"
         else
             red "错误：找不到节点信息文件 list.txt"
         fi
     else
-         red "错误：服务重启失败！请检查问题，或尝试手动重启。"
+        red "错误：服务重启失败！请检查问题，或尝试手动重启。"
     fi
 }
-# 主菜单
-menu() {
-     while true; do
-        clear
-   echo ""
-   magenta "=== 欢迎使用SERV00|SING-BOX一键安装脚本 ==="
-   echo ""
-    bold_italic_orange "\033[1;3m=== 脚本支持:VLESS VMESS HY2 TUIC socks5 协议，UUID 自动生成 ===\033[0m"
-    magenta "=== 支持安装：单，双，三个协议(面板最多只能开放3个端口)，自由选择 ==="
-    bold_italic_light_blue "=== 固定argo隧道 可以优选ip或优选域名！  ==="
-    bold_italic_light_blue "=== argo隧道配置文件生成网址  https://fscarmen.cloudflare.now.cc/ ==="
-    echo -e "${green}\033[1;3;33m脚本地址：\033[0m${re}\033[1;3;33mhttps://github.com/yyf-lbl/singbox-2\033[0m${re}\n"
-    purple "\033[1;3m*****转载请著名出处，请勿滥用*****\033[0m"
-    echo ""  
-    get_server_info
-    echo ""
-# 设置正方形大小
-size=8
-content1=$(check_singbox_installed)
-content2=$(check_web_status)
 
-# 固定宽度
-max_width=30
-
-for ((i=0; i<size; i++)); do
-    if [[ $i -eq 0 || $i -eq $((size-1)) ]]; then
-        echo -e "\033[1;33m=============================\033[0m"
-    elif [[ $i -eq 3 ]]; then
-        printf "||   %-34s   ||\n" "$content1"
-    elif [[ $i -eq 5 ]]; then
-        printf "||   %-28s    ||\n" "$content2"
-    else
-        echo -e "\033[1;33m||                         ||\033[0m"
-    fi
-done
-   echo ""
-   green "\033[1;3m1. 安装sing-box\033[0m"
-   echo "==============="
-   echo -e "\033[1;3;32m2. 安装Socks5\033[0m\033[1;3;33m(谨慎安装!)\033[0m"
-   echo "==============="
-   bold_italic_light_blue "\033[1;3m3. 查看节点信息\033[0m"
-   echo "==============="
-   red "\033[1;3m4. 卸载所有程序\033[0m"
-   echo "==============="
-   yellow "\\033[1;3m5. 清理系统进程\\033[0m"
-   echo "==============="
-   green "\033[1;3m6. 启动sing-box服务\033[0m"
-   echo "==============="
-   pink "\033[1;3m7. 停止所有服务\033[0m"
-   echo "==============="
-   pink "\033[1;3m8. 系统初始化\033[0m"
-   echo "==============="
-   bold_italic_orange "\033[1;3m9. 更换/更新可用 IP\033[0m"
-   echo "==============="
-   red "\033[1;3m0. 退出脚本\033[0m"
-   echo "==========="
-   reading "请输入选择(0-9): " choice
-   echo ""
-   case "${choice}" in
-        1)
-            install_singbox
-            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
-            clear
-            ;;
-        2)
-            setup_socks5
-            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
-            clear
-            ;;
-        3)
-            if [ -f "$WORKDIR/list.txt" ]; then
-                cat "$WORKDIR/list.txt"
-            else
-                red "节点信息文件不存在，请先安装服务。"
+# ------------------------------------------------------------------------------
+# 卸载 / 清理 / 初始化
+# ------------------------------------------------------------------------------
+uninstall_singbox() {
+    local choice item
+    purple "正在卸载 sing-box，请稍后..."
+    ask choice "确定要卸载吗? (ENTER默认:y)【y/n】: " y
+    case $choice in
+        [Yy])
+            for item in web bot npm socks5; do
+                if stop_proc "$item"; then purple "已终止 $item 进程。"; fi
+            done
+            cd "$HOME" || true
+            if [[ -n $WORKDIR && $WORKDIR != "$HOME" && $WORKDIR != / && -d $WORKDIR ]]; then
+                rm -rf "$WORKDIR"
+                purple "已删除程序配置文件"
             fi
-            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
-            clear
+            rm -f "$ARGO_CONF" "$base_dir/current_active_ip.txt" "$ip_file_cache"
+            ARGO_DOMAIN=""; ARGO_AUTH=""
+            purple "卸载完成！（UUID 等少量记录保留在 $base_dir）"
             ;;
-        4)
-           uninstall_singbox
-            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
-            clear
-            ;;
-        5)
-            manage_processes
-            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
-            clear
-            ;;
-        6)
-            start_web
-            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
-            clear
-            ;;
-        7)
-            stop_web
-            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
-            clear
-            ;;
-        8)
-            cleanup_and_delete
-            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
-            clear
-            ;;
-        9)
-            change_ip
-            read -p "$(echo -e "${YELLOW}${BOLD_ITALIC}操作完成，按任意键继续...${RESET}")" -n1 -s
-            clear
-            ;;
-        0) exit 0 ;;   
-      *)
-            red "\033[1;3m无效的选项，请输入 0 到 9\033[0m"
-            sleep 2
-            ;;
+        [Nn]) purple "已取消卸载。" ;;
+        *)    red "无效的选择，请输入 y 或 n" ;;
     esac
+}
+
+# 菜单 5
+manage_processes() {
+    local choice
+    red "请选择要执行的操作:"
+    red "1. 清理所有进程,可能会断开ssh连接"
+    red "2. 只清理当前用户的进程(保留当前终端会话)"
+    echo
+    ask choice "输入选择 (1 或 2): "
+    echo
+    case $choice in
+        1)
+            red "正在清理系统所有进程,请稍后......"
+            sleep 2
+            pkill -KILL -u "$USERNAME" ;;
+        2)
+            red "正在清理当前用户进程,请稍后......"
+            kill_user_procs_except_self TERM
+            sleep 2
+            kill_user_procs_except_self KILL
+            echo ;;
+        *) red "无效的选择。" ;;
+    esac
+    sleep 1
+}
+
+# 菜单 8
+cleanup_and_delete() {
+    local ans item
+    yellow "准备初始化系统，请稍后..."
+    sleep 1
+    red "警告: 此操作将会删除 $HOME 下除 backups 以外的所有文件，并终止所有进程!"
+    red "      网站目录(domains)、数据库配置文件等都会丢失，且无法恢复。"
+    ask ans "确认请输入大写 YES，其他任意输入取消: "
+    if [[ $ans != YES ]]; then
+        green "操作已取消。"
+        return 0
+    fi
+    if [[ -z $HOME || $HOME == / || ! -d $HOME ]]; then
+        red "HOME 目录异常，已中止。"
+        return 1
+    fi
+
+    red "--> 正在终止所有用户进程..."
+    for item in web bot npm socks5; do stop_proc "$item" >/dev/null; done
+    kill_user_procs_except_self KILL
+    sleep 2
+    yellow "--> 重要提示: 所有用户进程已终止。"
+
+    red "--> 正在删除用户主目录下的所有文件..."
+    cd "$HOME" || true
+    find "$HOME" -mindepth 1 -maxdepth 1 ! -name backups -exec rm -rf {} + 2>/dev/null
+
+    if [[ -z $(find "$HOME" -mindepth 1 -maxdepth 1 ! -name backups 2>/dev/null) ]]; then
+        green "已成功初始化系统! "
+        exit 0
+    else
+        red "删除操作出现问题，请检查是否有权限问题或其他错误。"
+    fi
+}
+
+show_nodes() {
+    if [[ -f $WORKDIR/list.txt || -f $WORKDIR/socks5.txt ]]; then
+        printf '%s' "$C_Y"
+        [[ -f $WORKDIR/list.txt ]] && cat "$WORKDIR/list.txt"
+        [[ -f $WORKDIR/socks5.txt ]] && cat "$WORKDIR/socks5.txt"
+        printf '%s' "$C_0"
+    else
+        red "节点信息文件不存在，请先安装服务。"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# 主菜单
+# ------------------------------------------------------------------------------
+status_installed() {
+    if [[ -e $WORKDIR/web ]]; then green "欢迎使用SINGBOX服务"; else red "sing-box当前未安装!"; fi
+}
+status_running() {
+    if proc_running web; then green "sing-box Running！"; else red "sing-box Not Running"; fi
+}
+box_line() { printf '%s||%s   %s\n' "$C_Y" "$C_0" "$1"; }
+
+menu() {
+    local choice
+    while true; do
+        clear
+        echo
+        yellow "=== 欢迎使用SERV00|SING-BOX一键安装脚本 ==="
+        echo
+        orange "=== 脚本支持:VLESS VMESS HY2 TUIC socks5 协议，UUID 自动生成 ==="
+        yellow "=== 支持安装：单，双，三个协议(面板最多只能开放3个端口)，自由选择 ==="
+        cyan   "=== 固定argo隧道 可以优选ip或优选域名！  ==="
+        cyan   "=== argo隧道配置文件生成网址  https://fscarmen.cloudflare.now.cc/ ==="
+        yellow "脚本地址：https://github.com/yyf-lbl/singbox-2"
+        purple "*****转载请著名出处，请勿滥用*****"
+        echo
+        get_server_info
+        echo
+
+        printf '%s=============================%s\n' "$C_Y" "$C_0"
+        box_line ""
+        box_line ""
+        box_line "$(status_installed)"
+        box_line ""
+        box_line "$(status_running)"
+        box_line ""
+        printf '%s=============================%s\n' "$C_Y" "$C_0"
+        echo
+
+        green  "1. 安装sing-box";                                     echo "==============="
+        printf '%s2. 安装Socks5%s%s(谨慎安装!)%s\n' "$C_G" "$C_0" "$C_Y" "$C_0"; echo "==============="
+        cyan   "3. 查看节点信息";                                     echo "==============="
+        red    "4. 卸载所有程序";                                     echo "==============="
+        yellow "5. 清理系统进程";                                     echo "==============="
+        green  "6. 启动sing-box服务";                                 echo "==============="
+        purple "7. 停止所有服务";                                     echo "==============="
+        purple "8. 系统初始化";                                       echo "==============="
+        orange "9. 更换/更新可用 IP";                                 echo "==============="
+        red    "0. 退出脚本";                                         echo "==========="
+        ask choice "请输入选择(0-9): "
+        echo
+
+        case $choice in
+            1) install_singbox;    pause; clear ;;
+            2) setup_socks5;       pause; clear ;;
+            3) show_nodes;         pause; clear ;;
+            4) uninstall_singbox;  pause; clear ;;
+            5) manage_processes;   pause; clear ;;
+            6) start_web;          pause; clear ;;
+            7) stop_web;           pause; clear ;;
+            8) cleanup_and_delete; pause; clear ;;
+            9) change_ip;          pause; clear ;;
+            0) exit 0 ;;
+            *) red "无效的选项，请输入 0 到 9"; sleep 2 ;;
+        esac
     done
 }
+
 menu
+
